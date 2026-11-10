@@ -8,8 +8,10 @@ import org.junit.jupiter.api.Test;
 class ErosionMathTest {
     @Test
     void unbreakableBlocksNeverErode() {
-        assertEquals(1.0, ErosionMath.resistance(-1, 0));
-        assertEquals(0.0, ErosionMath.successChance(1.0, ErosionMath.resistance(-1, 0)));
+        // Bedrock-like: unbreakable (negative hardness) AND blast-proof (resistance far past the
+        // ceiling) -- both terms of the 0.5/0.5 average must hit 1.0 for the overall result to.
+        assertEquals(1.0, ErosionMath.resistance(-1, 1_000_000));
+        assertEquals(0.0, ErosionMath.successChance(1.0, ErosionMath.resistance(-1, 1_000_000)));
     }
 
     @Test
