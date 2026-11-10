@@ -43,36 +43,57 @@ public final class FlowingFluidErosionGameTests {
         return Blocks.WATER.defaultBlockState().setValue(LiquidBlock.LEVEL, 3);
     }
 
+    /**
+     * erosionEnabled defaults to false (existing worlds are safe by default); LayerErosion.erode
+     * reports DISABLED rather than making a decision while it's off. These acceptance tests
+     * exercise the decision logic itself, so each one forces it on for its own duration and
+     * restores the previous value afterward via try/finally -- never left changed for a later
+     * test in the same batch.
+     */
+    private static void withErosionEnabled(Runnable body) {
+        boolean previous = FlowingFluidsConfig.EROSION_ENABLED.get();
+        FlowingFluidsConfig.EROSION_ENABLED.set(true);
+        try {
+            body.run();
+        } finally {
+            FlowingFluidsConfig.EROSION_ENABLED.set(previous);
+        }
+    }
+
     @GameTest(template = "flat_platform")
     public static void flowingWaterBesideAFullBlockConvertsItToFifteenLayers(GameTestHelper helper) {
-        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
-        helper.setBlock(POS.relative(Direction.EAST), flowingWater());
+        withErosionEnabled(() -> {
+            helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+            helper.setBlock(POS.relative(Direction.EAST), flowingWater());
 
-        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
-        helper.assertTrue(amount > 0, "flowing water beside the block must report a positive erosion amount");
+            double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+            helper.assertTrue(amount > 0, "flowing water beside the block must report a positive erosion amount");
 
-        var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
-        helper.assertTrue(result == LayerErosion.Result.ERODED, "expected ERODED, got " + result);
+            var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
+            helper.assertTrue(result == LayerErosion.Result.ERODED, "expected ERODED, got " + result);
 
-        BlockState after = helper.getBlockState(POS);
-        helper.assertTrue(after.getBlock() == LayeredSlopesMod.LAYERED_STONE.get(),
-                "a full stone block's first erosion hit must convert it to layered stone");
-        helper.assertTrue(after.getValue(LayeredBlock.LAYERS) == 15,
-                "first conversion must leave 15 layers, got " + after.getValue(LayeredBlock.LAYERS));
+            BlockState after = helper.getBlockState(POS);
+            helper.assertTrue(after.getBlock() == LayeredSlopesMod.LAYERED_STONE.get(),
+                    "a full stone block's first erosion hit must convert it to layered stone");
+            helper.assertTrue(after.getValue(LayeredBlock.LAYERS) == 15,
+                    "first conversion must leave 15 layers, got " + after.getValue(LayeredBlock.LAYERS));
+        });
         helper.succeed();
     }
 
     @GameTest(template = "flat_platform")
     public static void flowingWaterOverTheLastLayerErodesItToAir(GameTestHelper helper) {
-        helper.setBlock(POS, LayeredSlopesMod.LAYERED_STONE.get().defaultBlockState().setValue(LayeredBlock.LAYERS, 1));
-        helper.setBlock(POS.above(), flowingWater());
+        withErosionEnabled(() -> {
+            helper.setBlock(POS, LayeredSlopesMod.LAYERED_STONE.get().defaultBlockState().setValue(LayeredBlock.LAYERS, 1));
+            helper.setBlock(POS.above(), flowingWater());
 
-        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
-        helper.assertTrue(amount > 0, "flowing water over the block must report a positive erosion amount");
+            double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+            helper.assertTrue(amount > 0, "flowing water over the block must report a positive erosion amount");
 
-        var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
-        helper.assertTrue(result == LayerErosion.Result.ERODED, "expected ERODED, got " + result);
-        helper.assertTrue(helper.getBlockState(POS).isAir(), "the final layer must erode away to air");
+            var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
+            helper.assertTrue(result == LayerErosion.Result.ERODED, "expected ERODED, got " + result);
+            helper.assertTrue(helper.getBlockState(POS).isAir(), "the final layer must erode away to air");
+        });
         helper.succeed();
     }
 
@@ -89,41 +110,47 @@ public final class FlowingFluidErosionGameTests {
 
     @GameTest(template = "flat_platform")
     public static void aResistedRollLeavesTheBlockUnchanged(GameTestHelper helper) {
-        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        withErosionEnabled(() -> {
+            helper.setBlock(POS, Blocks.STONE.defaultBlockState());
 
-        // amount=0 forces successChance to exactly 0.0, and nextDouble() is always >= 0.0.
-        var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), 0.0, helper.getLevel().getRandom());
-        helper.assertTrue(result == LayerErosion.Result.RESISTED, "expected RESISTED, got " + result);
-        helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "a resisted roll must not change the block");
+            // amount=0 forces successChance to exactly 0.0, and nextDouble() is always >= 0.0.
+            var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), 0.0, helper.getLevel().getRandom());
+            helper.assertTrue(result == LayerErosion.Result.RESISTED, "expected RESISTED, got " + result);
+            helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "a resisted roll must not change the block");
+        });
         helper.succeed();
     }
 
     @GameTest(template = "flat_platform")
     public static void aCancelledProtectionHookLeavesTheBlockUnchanged(GameTestHelper helper) {
-        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
-        Consumer<BlockEvent.BreakEvent> listener = event -> event.setCanceled(true);
-        NeoForge.EVENT_BUS.addListener(listener);
-        try {
-            var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
-            helper.assertTrue(result == LayerErosion.Result.PROTECTED, "expected PROTECTED, got " + result);
-            helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "a cancelled protection hook must not change the block");
-        } finally {
-            NeoForge.EVENT_BUS.unregister(listener);
-        }
+        withErosionEnabled(() -> {
+            helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+            Consumer<BlockEvent.BreakEvent> listener = event -> event.setCanceled(true);
+            NeoForge.EVENT_BUS.addListener(listener);
+            try {
+                var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
+                helper.assertTrue(result == LayerErosion.Result.PROTECTED, "expected PROTECTED, got " + result);
+                helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "a cancelled protection hook must not change the block");
+            } finally {
+                NeoForge.EVENT_BUS.unregister(listener);
+            }
+        });
         helper.succeed();
     }
 
     @GameTest(template = "flat_platform")
     public static void erodingAFullGrassBlockSettlesItAsLayeredDirtNotLayeredGrass(GameTestHelper helper) {
-        helper.setBlock(POS, Blocks.GRASS_BLOCK.defaultBlockState());
+        withErosionEnabled(() -> {
+            helper.setBlock(POS, Blocks.GRASS_BLOCK.defaultBlockState());
 
-        var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
-        helper.assertTrue(result == LayerErosion.Result.ERODED, "expected ERODED, got " + result);
+            var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
+            helper.assertTrue(result == LayerErosion.Result.ERODED, "expected ERODED, got " + result);
 
-        BlockState after = helper.getBlockState(POS);
-        helper.assertTrue(after.getBlock() == LayeredSlopesMod.LAYERED_DIRT.get(),
-                "erosion must disturb grass into dirt, matching Dynamic Terrain's established semantic, got " + after.getBlock());
-        helper.assertTrue(after.getValue(LayeredBlock.LAYERS) == 15, "first conversion must leave 15 layers");
+            BlockState after = helper.getBlockState(POS);
+            helper.assertTrue(after.getBlock() == LayeredSlopesMod.LAYERED_DIRT.get(),
+                    "erosion must disturb grass into dirt, matching Dynamic Terrain's established semantic, got " + after.getBlock());
+            helper.assertTrue(after.getValue(LayeredBlock.LAYERS) == 15, "first conversion must leave 15 layers");
+        });
         helper.succeed();
     }
 }
