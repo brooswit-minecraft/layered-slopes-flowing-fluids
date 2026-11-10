@@ -5,6 +5,7 @@ import io.github.brooswitminecraft.layeredslopes.LayeredSlopesMod;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.level.block.Blocks;
@@ -15,6 +16,8 @@ import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -26,9 +29,11 @@ import java.util.function.Consumer;
  * clamps to that range by construction.
  *
  * <p>Not covered here (left to manual/fleet verification per the ticket's "clearly distinguish
- * automated and unperformed manual tests"): the real per-second player-sampling cadence, and
- * actual multi-repo coexistence with Dynamic Terrain and/or Layered Slope Grading installed
- * together -- those need a real running server/pack, not a GameTest.
+ * automated and unperformed manual tests"): the real per-second player-sampling cadence with
+ * actual multiple real players, and actual multi-repo coexistence with Dynamic Terrain and/or
+ * Layered Slope Grading installed together -- those need a real running server/pack, not a
+ * GameTest. The duplicate/cascade dedup mechanism itself (self-review 52887) IS covered, directly
+ * and deterministically, by {@link #aPositionAlreadyVisitedThisSecondIsNotAttemptedAgain}.
  */
 @GameTestHolder(LayeredSlopesFlowingFluidsMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -105,6 +110,28 @@ public final class FlowingFluidErosionGameTests {
         double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
         helper.assertTrue(amount == 0, "still source water must never report an erosion amount, got " + amount);
         helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "the block must stay unchanged next to still source water");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 52887: two players with overlapping sample radii must not
+     * double-attempt the exact same dimension+position in the same second. This exercises the
+     * real production dedup primitive ({@code markVisited}) directly and deterministically --
+     * going through full {@code sampleAround} with real randomness would make "did the second
+     * player's roll land on the same cell" itself nondeterministic, which is exactly what this
+     * dedup exists to make irrelevant: whichever position is picked, a repeat is always skipped.
+     */
+    @GameTest(template = "flat_platform")
+    public static void aPositionAlreadyVisitedThisSecondIsNotAttemptedAgain(GameTestHelper helper) {
+        Set<GlobalPos> visited = new HashSet<>();
+        BlockPos absolute = helper.absolutePos(POS);
+
+        helper.assertTrue(FlowingFluidErosion.markVisited(visited, helper.getLevel(), absolute),
+                "the first player to sample this position this second must record it as visited");
+        helper.assertTrue(!FlowingFluidErosion.markVisited(visited, helper.getLevel(), absolute),
+                "a second player sampling the SAME position in the SAME second must be skipped, not re-rolled");
+        helper.assertTrue(FlowingFluidErosion.markVisited(visited, helper.getLevel(), absolute.relative(Direction.EAST)),
+                "a genuinely different position must still be allowed");
         helper.succeed();
     }
 

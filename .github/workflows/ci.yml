@@ -33,8 +33,8 @@ jobs:
       # Gradle reports BUILD SUCCESSFUL even when the GameTest server fails to start or ran zero
       # tests, so a green exit code alone proves nothing (same guard pattern as layered-slopes'
       # MINECRAFT-499 CI). check_gametest_count.py fails closed unless every named test below
-      # actually ran and passed: the over/beside/first-conversion/final-layer/resisted/protected/
-      # grass-disturbance acceptance evidence for MINECRAFT-513.
+      # actually ran and passed: the over/beside/first-conversion/final-layer/dedup/resisted/
+      # protected/grass-disturbance acceptance evidence for MINECRAFT-513.
       - name: Run GameTests
         run: |
           set -o pipefail

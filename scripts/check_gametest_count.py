@@ -23,8 +23,9 @@ class RuntimeEvidenceError(ValueError):
 
 
 # flowingWaterBesideAFullBlock.../flowingWaterOverTheLastLayer.../stationarySourceWater.../
-# aResistedRoll.../aCancelledProtectionHook.../erodingAFullGrassBlock...
-EXPECTED_REQUIRED_TEST_COUNT = 6
+# aPositionAlreadyVisitedThisSecond.../aResistedRoll.../aCancelledProtectionHook.../
+# erodingAFullGrassBlock...
+EXPECTED_REQUIRED_TEST_COUNT = 7
 
 
 def verify_runtime_log(log_text):
