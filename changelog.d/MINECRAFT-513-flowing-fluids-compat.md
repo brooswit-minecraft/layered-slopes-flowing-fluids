@@ -29,3 +29,6 @@ bump: minor
   recording a new one) on any notification that does not itself qualify, and re-checks that the
   fluid currently at a position is still nonempty and governed before trusting any stored record
   there at all -- closing a gap where a stale record could outlive the fluid it was made about.
+- Added regression coverage for Flowing Fluids disabled/ignoring water (falls back to the plain
+  vanilla rule, verified by directly toggling its own config), and for a manual replacement
+  immediately discarding a stale `RecentFlowActivity` record rather than letting it age out.

@@ -8,9 +8,11 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.Fluids;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -324,20 +326,22 @@ public final class FlowingFluidErosionGameTests {
     }
 
     /**
-     * MINECRAFT-513 self-review 53049/53050/53051/53074: proves a real, physics-driven fill to a
-     * FULL cell at the exact fed position, attributed specifically to {@link RecentFlowActivity}
-     * (not merely a nonzero aggregate reading a partial cell could also satisfy), erodes --
-     * with NO manual edit of the fed position itself after the feed starts, the gap {@link
-     * #aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids} deliberately does not close.
-     * A single source feeds straight down into a cell enclosed on every other side (confirmed
-     * locally: under the real pinned Flowing Fluids jar this confined cell actually fills to a
-     * genuine full source; under vanilla the same confinement produces its own always-advancing
-     * full non-source falling column, so the aggregate erosion check still passes under either
-     * engine without assuming which is active, while the exact-position assertions below are
-     * specific to Flowing Fluids actually being active). Removing the feed and waiting past the
-     * recent window proves the fluid is RETAINED, stationary, with erosion genuinely stopped --
-     * not merely drained away, which {@code amount == 0} alone could not tell apart -- confirmed
-     * locally under both engines.
+     * MINECRAFT-513 self-review 53049/53050/53051/53074/53081: proves a real, physics-driven
+     * fill to a FULL cell at the exact fed position, attributed specifically to {@link
+     * RecentFlowActivity} (not merely a nonzero aggregate reading a partial cell could also
+     * satisfy), erodes -- with NO manual edit of the fed position itself after the feed starts,
+     * the gap {@link #aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids} deliberately
+     * does not close. A single source feeds straight down into a cell enclosed on every other
+     * side. Review 53081 found phase 1 accepted either outcome without asserting which engine
+     * SHOULD be active, so a real Flowing Fluids integration failure under the coinstalled job
+     * could silently pass via the vanilla fallback alternative; the expected mode is now decided
+     * upfront from {@link FlowingFluidsCompat#isGoverning} and phase 1 REQUIRES that exact
+     * outcome (the real full source verified by RecentFlowActivity when Flowing Fluids is
+     * governing water; vanilla's always-advancing full non-source falling column only as a
+     * fallback) rather than accepting whichever happens to show up. Removing the feed and
+     * waiting past the recent window proves the fluid is RETAINED, stationary, with erosion
+     * genuinely stopped -- not merely drained away, which {@code amount == 0} alone could not
+     * tell apart -- confirmed locally under both engines.
      */
     @GameTest(template = "fluid_flow_platform", timeoutTicks = 200)
     public static void aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp(GameTestHelper helper) {
@@ -352,33 +356,33 @@ public final class FlowingFluidErosionGameTests {
         helper.setBlock(fed.west(), Blocks.STONE.defaultBlockState());
         helper.setBlock(contact, Blocks.STONE.defaultBlockState());
         helper.setBlock(source, Blocks.WATER.defaultBlockState());
+        boolean flowingFluidsShouldGovern = FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState());
 
         // Two phases, so this cannot use succeedWhen (which succeeds the instant its criterion
         // stops throwing): poll every tick for the real fill to erode, then switch to proving it
         // settles once the feed is gone. A guard flag keeps the phase-1 side effect (removing the
         // source) from repeating on every subsequent tick once it has already fired.
         var feedRemoved = new boolean[1];
-        var viaRecentFlowActivity = new boolean[1];
         helper.onEachTick(() -> {
             if (feedRemoved[0]) {
                 return;
             }
-            var level = (net.minecraft.server.level.ServerLevel) helper.getLevel();
+            var level = (ServerLevel) helper.getLevel();
             var absoluteFed = helper.absolutePos(fed);
             var fedFluid = level.getFluidState(absoluteFed);
-            boolean fedIsFullAndVerified = fedFluid.getAmount() >= FluidMath.FULL_FLUID && fedFluid.isSource()
-                    && RecentFlowActivity.recentlyChanged(level, absoluteFed);
+            boolean required = flowingFluidsShouldGovern
+                    ? fedFluid.getAmount() >= FluidMath.FULL_FLUID && fedFluid.isSource()
+                            && RecentFlowActivity.recentlyChanged(level, absoluteFed)
+                    : fedFluid.getAmount() >= FluidMath.FULL_FLUID && !fedFluid.isSource();
             double amount = FlowingFluidErosion.strongestFlowAround(level, helper.absolutePos(contact));
-            boolean fedIsFullUnderVanilla = fedFluid.getAmount() >= FluidMath.FULL_FLUID && !fedFluid.isSource();
-            if (amount <= 0 || !(fedIsFullAndVerified || fedIsFullUnderVanilla)) {
+            if (amount <= 0 || !required) {
                 return;
             }
             feedRemoved[0] = true;
-            viaRecentFlowActivity[0] = fedIsFullAndVerified;
             helper.setBlock(source, Blocks.AIR.defaultBlockState());
             helper.runAfterDelay(60, () -> {
                 var afterFluid = level.getFluidState(absoluteFed);
-                if (viaRecentFlowActivity[0]) {
+                if (flowingFluidsShouldGovern) {
                     // A genuine Flowing Fluids source is self-sustaining once created: it must
                     // stay right there, stationary, with erosion genuinely stopped -- not merely
                     // drained away, which amount == 0 alone could not tell apart.
@@ -410,6 +414,72 @@ public final class FlowingFluidErosionGameTests {
                         + "within 100 ticks, got amount=" + FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(contact))
                         + " (fed cell fluid state: " + helper.getLevel().getFluidState(helper.absolutePos(fed)) + ")");
             }
+        });
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53081: a disabled Flowing Fluids mod ({@code config.enableMod}
+     * false) means its own {@code ff$tickMixin} never cancels vanilla's tick (the {@code
+     * ci.cancel()} is conditional on exactly that flag, confirmed by decompiling the pinned jar),
+     * so vanilla's own fluid logic must govern instead -- {@link FlowingFluidsCompat#isGoverning}
+     * must read false, the one signal {@link RecentFlowActivity} itself gates on, so a real
+     * multi-tick physics fixture is not needed here (and toggling this GLOBAL config for several
+     * real ticks would risk interfering with any OTHER test's own Flowing Fluids physics running
+     * concurrently in the same batch -- this check is synchronous and toggles back before any
+     * other tick runs). A no-op pass-through whenever Flowing Fluids is not loaded at all, where
+     * {@code isGoverning} already reads false unconditionally.
+     */
+    @GameTest(template = "flat_platform")
+    public static void aDisabledFlowingFluidsNeverGovernsWater(GameTestHelper helper) {
+        FlowingFluidsCompat.withModDisabledForTesting(() ->
+                helper.assertTrue(!FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState()),
+                        "a disabled Flowing Fluids must never report governing water"));
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53081: the same fallback signal, but via Flowing Fluids' OTHER
+     * governance knob -- water added to its own fluid blacklist ({@code isFluidAllowed} false
+     * for water specifically) rather than the mod disabled outright.
+     */
+    @GameTest(template = "flat_platform")
+    public static void anIgnoredFluidIsNeverGoverned(GameTestHelper helper) {
+        FlowingFluidsCompat.withWaterIgnoredForTesting(() ->
+                helper.assertTrue(!FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState()),
+                        "an ignored fluid must never report as governed by Flowing Fluids"));
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53074: a manual replacement of a position's fluid must discard
+     * any existing RecentFlowActivity record for it immediately, not merely let it age out over
+     * the rest of the window. Lets a real Flowing Fluids transfer verify the confined fed
+     * position first, then manually replaces it and asserts recentlyChanged reads false on the
+     * very next check -- a no-op (trivially succeeds) whenever Flowing Fluids is not governing
+     * water, since nothing is ever recorded there to regress against in the first place.
+     */
+    @GameTest(template = "fluid_flow_platform", timeoutTicks = 200)
+    public static void aManualReplaceAfterARealTransferImmediatelyClearsTheStaleRecord(GameTestHelper helper) {
+        if (!FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState())) {
+            helper.succeed();
+            return;
+        }
+        BlockPos source = new BlockPos(1, 3, 1);
+        BlockPos fed = new BlockPos(1, 2, 1);
+        helper.setBlock(fed.north(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(fed.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(fed.west(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(fed.east(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(source, Blocks.WATER.defaultBlockState());
+        var level = (ServerLevel) helper.getLevel();
+        var absoluteFed = helper.absolutePos(fed);
+
+        helper.succeedWhen(() -> {
+            helper.assertTrue(RecentFlowActivity.recentlyChanged(level, absoluteFed),
+                    "a real Flowing Fluids transfer must verify this position before this regression can run");
+            helper.setBlock(fed, Blocks.STONE.defaultBlockState());
+            helper.assertTrue(!RecentFlowActivity.recentlyChanged(level, absoluteFed),
+                    "a manual replacement must immediately discard the stale record, not merely let it age out");
         });
     }
 

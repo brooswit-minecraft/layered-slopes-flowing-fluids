@@ -43,6 +43,33 @@ final class FlowingFluidsCompat {
         return isLoaded() && Bridge.isCurrentlyTicking();
     }
 
+    /**
+     * Test-only: runs {@code body} with Flowing Fluids' own {@code enableMod} toggled off, so
+     * {@link #isGoverning} reads false and the vanilla fallback rule must apply -- a no-op (just
+     * runs {@code body}) when Flowing Fluids is not loaded at all. Always restores the previous
+     * value afterward via try/finally.
+     */
+    static void withModDisabledForTesting(Runnable body) {
+        if (!isLoaded()) {
+            body.run();
+            return;
+        }
+        Bridge.withModDisabledForTesting(body);
+    }
+
+    /**
+     * Test-only: runs {@code body} with water added to Flowing Fluids' own fluid blacklist, so
+     * {@link #isGoverning} reads false for water specifically -- a no-op when Flowing Fluids is
+     * not loaded. Always restores the previous blacklist afterward via try/finally.
+     */
+    static void withWaterIgnoredForTesting(Runnable body) {
+        if (!isLoaded()) {
+            body.run();
+            return;
+        }
+        Bridge.withWaterIgnoredForTesting(body);
+    }
+
     /** Holds the Flowing Fluids references so they load only after {@link #isLoaded()}. */
     private static final class Bridge {
         static boolean isGoverning(FluidState fluid) {
@@ -52,6 +79,31 @@ final class FlowingFluidsCompat {
 
         static boolean isCurrentlyTicking() {
             return traben.flowing_fluids.FlowingFluids.isManeuveringFluids;
+        }
+
+        static void withModDisabledForTesting(Runnable body) {
+            var config = traben.flowing_fluids.FlowingFluids.config;
+            boolean previous = config.enableMod;
+            config.enableMod = false;
+            try {
+                body.run();
+            } finally {
+                config.enableMod = previous;
+            }
+        }
+
+        static void withWaterIgnoredForTesting(Runnable body) {
+            var config = traben.flowing_fluids.FlowingFluids.config;
+            String waterId = net.minecraft.core.registries.BuiltInRegistries.FLUID
+                    .getKey(net.minecraft.world.level.material.Fluids.WATER).toString();
+            boolean added = config.fluidBlacklist.add(waterId);
+            try {
+                body.run();
+            } finally {
+                if (added) {
+                    config.fluidBlacklist.remove(waterId);
+                }
+            }
         }
     }
 }

@@ -136,17 +136,28 @@ real transfer) never erodes, with or without Flowing Fluids loaded;
 scoped strictly per-position; `realFlowingWaterAdvancesAndErodesWhatItTouches` places a genuine
 water source and polls the production decision against whatever the server's *own* scheduled
 fluid ticks actually produce next to the target, for real, under whichever engine (vanilla, or
-the real Flowing Fluids engine when that mod is coinstalled) is actually running; and
+the real Flowing Fluids engine when that mod is coinstalled) is actually running;
 `aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp` feeds a confined cell to full with no
 manual edit of the fed position itself, directly asserting the exact fed position actually
-reached a full `isSource()` state verified by `RecentFlowActivity` (under Flowing Fluids) or the
-always-advancing full non-source falling column (under vanilla) -- not merely a nonzero aggregate
-reading a partial cell could also satisfy -- then removes the feed and proves erosion genuinely
-stops: under Flowing Fluids the source is retained, stationary, with `RecentFlowActivity` no
-longer verifying it; under vanilla's own non-source falling column, with nothing left feeding it,
-draining away to empty is its own correct "settled" outcome, confirmed locally under both
-engines -- distinguishing "stopped because it settled" from "stopped because it merely drained
-away" matters because `amount == 0` alone cannot tell those apart.
+reached a full `isSource()` state verified by `RecentFlowActivity` when Flowing Fluids is
+expected to be governing water, or the always-advancing full non-source falling column
+otherwise -- not merely a nonzero aggregate reading a partial cell could also satisfy, and not
+accepting whichever outcome happens to show up (review 53081: a real Flowing Fluids integration
+failure under the coinstalled job could otherwise silently pass via the vanilla fallback
+alternative) -- then removes the feed and proves erosion genuinely stops: under Flowing Fluids
+the source is retained, stationary, with `RecentFlowActivity` no longer verifying it; under
+vanilla's own non-source falling column, with nothing left feeding it, draining away to empty is
+its own correct "settled" outcome, confirmed locally under both engines -- distinguishing
+"stopped because it settled" from "stopped because it merely drained away" matters because
+`amount == 0` alone cannot tell those apart. `aDisabledFlowingFluidsNeverGovernsWater` /
+`anIgnoredFluidIsNeverGoverned` toggle Flowing Fluids' own `enableMod`/fluid blacklist directly
+(via `FlowingFluidsCompat`'s test-only helpers) and assert `isGoverning` reads false -- a
+synchronous, single-tick check rather than a multi-tick physics fixture, deliberately: toggling
+either of those GLOBAL config knobs for several real ticks would risk interfering with any other
+test's own Flowing Fluids physics running concurrently in the same batch. And
+`aManualReplaceAfterARealTransferImmediatelyClearsTheStaleRecord` lets a real transfer verify a
+confined position, then manually replaces it and asserts `recentlyChanged` reads false on the
+very next check -- proving the stale record is discarded immediately, not merely left to age out.
 
 Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
 1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real

@@ -27,7 +27,10 @@ class RuntimeEvidenceError(ValueError):
 # aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids.../
 # anUnrelatedNeighborNotificationDoesNotMarkAnotherPositionAsRecentlyChanged.../
 # realFlowingWaterAdvancesAndErodesWhatItTouches.../
-# aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp.../aPositionAlreadyVisitedThisSecond.../
+# aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp.../
+# aDisabledFlowingFluidsNeverGovernsWater.../anIgnoredFluidIsNeverGoverned.../
+# aManualReplaceAfterARealTransferImmediatelyClearsTheStaleRecord.../
+# aPositionAlreadyVisitedThisSecond.../
 # chanceScaleZeroDisablesAnOtherwiseGuaranteedAttempt.../aResistedRoll.../
 # aCancelledProtectionHook.../erodingAFullGrassBlock.../
 # aVanillaFactoryConstructedFullStateIsSourceAndErodesNothing.../
@@ -35,7 +38,7 @@ class RuntimeEvidenceError(ValueError):
 # not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: these tests
 # erode via whichever real engine's own physics is actually active, never by assuming which one;
 # see FlowingFluidErosionGameTests)
-EXPECTED_REQUIRED_TEST_COUNT = 17
+EXPECTED_REQUIRED_TEST_COUNT = 20
 
 
 def verify_runtime_log(log_text):
