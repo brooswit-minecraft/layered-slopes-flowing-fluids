@@ -14,6 +14,7 @@ public final class FlowingFluidsConfig {
     public static final ModConfigSpec SPEC;
     public static final ModConfigSpec.BooleanValue EROSION_ENABLED;
     public static final ModConfigSpec.IntValue SAMPLES_PER_SECOND;
+    public static final ModConfigSpec.DoubleValue CHANCE_SCALE;
 
     static {
         Boolean legacyErosionEnabled = LegacyConfigMigration.readLegacyErosionEnabled(
@@ -34,6 +35,12 @@ public final class FlowingFluidsConfig {
                 .comment("Random positions sampled around each player per second for flowing-fluid erosion. 0 turns it off. "
                         + "Defaults to Dynamic Terrain's old waterSamplesPerSecond value on first write if that was explicitly set.")
                 .defineInRange("samplesPerSecond", migratedSamplesPerSecond, 0, 4096);
+        CHANCE_SCALE = builder
+                .comment("Bounded multiplier (0.0-1.0) applied on top of the hardness/blast-resistance-based erosion chance curve "
+                        + "for every eligible attempt. 1.0 (default) is the curve as designed; 0.0 makes every attempt RESIST "
+                        + "regardless of amount, letting an operator dial overall erosion probability down (or off) without "
+                        + "changing samplesPerSecond's unrelated sampling cadence.")
+                .defineInRange("chanceScale", 1.0, 0.0, 1.0);
         SPEC = builder.build();
     }
 

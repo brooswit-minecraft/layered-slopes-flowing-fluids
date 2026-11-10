@@ -7,4 +7,6 @@ bump: minor
   eroding the last layer leaves air. Erosion disturbs grass into dirt. Still/source fluid
   contact is a no-op. Required dependency on Layered Slopes only, no Dynamic Terrain runtime
   dependency. Sampling is deduplicated globally per second across all players so overlapping
-  sample radii cannot double-attempt the same position.
+  sample radii cannot double-attempt the same position. Server config `chanceScale` (0.0-1.0,
+  default 1.0) scales the erosion-probability curve independently of `samplesPerSecond`'s
+  sampling cadence.

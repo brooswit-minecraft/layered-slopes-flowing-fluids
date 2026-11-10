@@ -65,6 +65,17 @@ public final class FlowingFluidErosionGameTests {
         }
     }
 
+    /** Temporarily overrides {@code chanceScale}, restoring the previous value via try/finally. */
+    private static void withChanceScale(double scale, Runnable body) {
+        double previous = FlowingFluidsConfig.CHANCE_SCALE.get();
+        FlowingFluidsConfig.CHANCE_SCALE.set(scale);
+        try {
+            body.run();
+        } finally {
+            FlowingFluidsConfig.CHANCE_SCALE.set(previous);
+        }
+    }
+
     @GameTest(template = "flat_platform")
     public static void flowingWaterBesideAFullBlockConvertsItToFifteenLayers(GameTestHelper helper) {
         withErosionEnabled(() -> {
@@ -132,6 +143,26 @@ public final class FlowingFluidErosionGameTests {
                 "a second player sampling the SAME position in the SAME second must be skipped, not re-rolled");
         helper.assertTrue(FlowingFluidErosion.markVisited(visited, helper.getLevel(), absolute.relative(Direction.EAST)),
                 "a genuinely different position must still be allowed");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 52905: the ticket requires "configurable bounded chance/cadence"
+     * -- samplesPerSecond alone only configures cadence. chanceScale=0.0 must disable erosion
+     * even for an attempt that would otherwise be guaranteed to succeed (GUARANTEED_AMOUNT makes
+     * the underlying curve's own chance exactly 1.0), proving the scale is actually applied, not
+     * just present as an unused config key.
+     */
+    @GameTest(template = "flat_platform")
+    public static void chanceScaleZeroDisablesAnOtherwiseGuaranteedAttempt(GameTestHelper helper) {
+        withErosionEnabled(() -> withChanceScale(0.0, () -> {
+            helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+
+            var result = LayerErosion.erode(helper.getLevel(), helper.absolutePos(POS), GUARANTEED_AMOUNT, helper.getLevel().getRandom());
+            helper.assertTrue(result == LayerErosion.Result.RESISTED,
+                    "chanceScale=0.0 must force RESISTED even at an amount the curve alone would make certain, got " + result);
+            helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "a chanceScale-disabled attempt must not change the block");
+        }));
         helper.succeed();
     }
 

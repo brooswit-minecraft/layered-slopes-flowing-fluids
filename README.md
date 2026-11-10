@@ -25,8 +25,10 @@ mapping (`LayeredMaterials`) independently of Dynamic Terrain or the
 sibling [Layered Slope Grading](https://github.com/brooswit-minecraft/layered-slope-grading)
 extraction, so it works whether or not either is installed.
 
-Server config (`erosionEnabled`, `samplesPerSecond`) defaults erosion to
-**off**, so existing worlds are unaffected until explicitly enabled.
+Server config (`erosionEnabled`, `samplesPerSecond`, `chanceScale`) defaults erosion to
+**off**, so existing worlds are unaffected until explicitly enabled. `samplesPerSecond`
+configures cadence (how often positions are sampled); `chanceScale` (0.0-1.0, default 1.0)
+independently configures the erosion-probability curve itself, down to fully off.
 
 ## Building
 

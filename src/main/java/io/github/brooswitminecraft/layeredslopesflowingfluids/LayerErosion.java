@@ -24,6 +24,12 @@ import net.minecraft.world.level.block.state.BlockState;
  * becomes air (final-layer behaviour). Erosion always disturbs grass-group material into dirt,
  * matching Dynamic Terrain's established disturb semantic for erosion (as opposed to manual
  * grading, which does not disturb).
+ *
+ * <p>The success chance is {@link ErosionMath#successChance}'s hardness/blast-resistance-based
+ * curve scaled by the bounded, operator-facing {@link FlowingFluidsConfig#CHANCE_SCALE} (default
+ * 1.0 leaves the curve as designed; 0.0 disables erosion entirely regardless of amount) --
+ * {@code samplesPerSecond} alone only configures cadence, not probability, so both halves of the
+ * ticket's "configurable bounded chance/cadence" requirement are covered independently.
  */
 public final class LayerErosion {
     private LayerErosion() {}
@@ -39,7 +45,8 @@ public final class LayerErosion {
             return Result.SKIPPED;
         }
         double resistance = ErosionMath.resistance(state.getDestroySpeed(level, pos), state.getBlock().getExplosionResistance());
-        if (random.nextDouble() >= ErosionMath.successChance(amount, resistance)) {
+        double chance = ErosionMath.successChance(amount, resistance) * FlowingFluidsConfig.CHANCE_SCALE.get();
+        if (random.nextDouble() >= chance) {
             return Result.RESISTED;
         }
         if (!Protection.mayErode(level, pos)) {
