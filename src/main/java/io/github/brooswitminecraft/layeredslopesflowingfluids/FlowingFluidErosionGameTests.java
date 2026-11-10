@@ -209,6 +209,33 @@ public final class FlowingFluidErosionGameTests {
     }
 
     /**
+     * MINECRAFT-513 self-review 53036: a synthetic, hand-constructed state does not prove the
+     * decision logic reacts correctly to a REAL fluid-tick transfer. This places a genuine water
+     * source on open ground and lets the server's own scheduled fluid ticks run (the real vanilla
+     * engine, or the real Flowing Fluids engine's {@code ff$tickMixin} replacement when that mod
+     * is coinstalled -- this test makes no assumption about which) for 30 real ticks, then queries
+     * the actual production decision against whatever state that real simulation produced next to
+     * the target. {@code fluid_flow_platform} (9x9 open floor) gives the spread room to still be
+     * genuinely advancing past the target at that point rather than having already filled and
+     * equalized across the whole bounded area (which {@code flat_platform}'s 3x3 footprint would
+     * risk doing almost immediately).
+     */
+    @GameTest(template = "fluid_flow_platform", timeoutTicks = 200)
+    public static void realFlowingWaterAdvancesAndErodesWhatItTouches(GameTestHelper helper) {
+        BlockPos source = new BlockPos(1, 1, 1);
+        BlockPos target = new BlockPos(4, 1, 1);
+        helper.setBlock(source, Blocks.WATER.defaultBlockState());
+        helper.setBlock(target, Blocks.STONE.defaultBlockState());
+
+        helper.runAfterDelay(30, () -> {
+            double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(target));
+            helper.assertTrue(amount > 0,
+                    "real fluid-tick physics spreading from a live source across open ground must report a positive erosion amount next to the target, got " + amount);
+            helper.succeed();
+        });
+    }
+
+    /**
      * MINECRAFT-513 self-review 52887: two players with overlapping sample radii must not
      * double-attempt the exact same dimension+position in the same second. This exercises the
      * real production dedup primitive ({@code markVisited}) directly and deterministically --

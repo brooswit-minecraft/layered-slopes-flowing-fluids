@@ -126,11 +126,13 @@ public final class FlowingFluidErosion {
      * still spread into right now, as opposed to a stationary pool that has already equalized.
      * Mirrors Flowing Fluids' own decompiled {@code canFitIntoFluid} precondition (also vanilla's
      * own spread precondition, not something Flowing Fluids introduces): a horizontal neighbour
-     * must be empty or the same fluid at a strictly lower amount; the downward neighbour must be
-     * empty or the same fluid below full (8). A full (amount 8), non-source cell -- a falling
-     * waterfall column -- is always advancing without needing a neighbour check, since vanilla's
-     * own falling-fluid mechanic keeps it moving by definition. Only called for non-source
-     * contact; a source is handled separately by the caller (sources never "advance" themselves).
+     * must be air (checked on the BLOCK, not the fluid state -- a solid block's {@code FluidState}
+     * is ALSO {@code isEmpty()}, so a fluid-state-only check would misread a solid wall as open,
+     * self-review 53036's finding) or the same fluid at a strictly lower amount; the downward
+     * neighbour must be air or the same fluid below full (8). A full (amount 8), non-source cell
+     * -- a falling waterfall column, a vanilla-only representation (see README) -- is always
+     * advancing without needing a neighbour check. Only called for non-source contact; a source
+     * is handled separately by the caller (sources never "advance" themselves).
      */
     static boolean isAdvancing(ServerLevel level, BlockPos fluidPos, FluidState fluid) {
         if (fluid.getAmount() >= FluidMath.FULL_FLUID) {
@@ -140,11 +142,15 @@ public final class FlowingFluidErosion {
             if (direction == Direction.UP) {
                 continue;
             }
-            FluidState neighbor = level.getFluidState(fluidPos.relative(direction));
-            if (neighbor.isEmpty()) {
+            BlockPos neighborPos = fluidPos.relative(direction);
+            // A solid block's FluidState is ALSO isEmpty() (no fluid there is not the same as "open
+            // to flow into"): an ordinary air check on the BLOCK, not the fluid, is what actually
+            // distinguishes "open" from "solid and blocking" (self-review 53036's finding).
+            if (level.getBlockState(neighborPos).isAir()) {
                 return true;
             }
-            if (!neighbor.getType().isSame(fluid.getType())) {
+            FluidState neighbor = level.getFluidState(neighborPos);
+            if (neighbor.isEmpty() || !neighbor.getType().isSame(fluid.getType())) {
                 continue;
             }
             if (direction == Direction.DOWN ? neighbor.getAmount() < FluidMath.FULL_FLUID : neighbor.getAmount() < fluid.getAmount()) {

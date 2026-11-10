@@ -46,22 +46,46 @@ That's possible because Flowing Fluids mixes directly into vanilla `Fluids.WATER
 `FluidState.isSource()`/`getAmount()`) rather than registering new fluid types -- confirmed by
 decompiling its pinned jar: its own `FFFluidUtils.getStateForFluidByAmount` builds every state
 through the exact same public vanilla `FlowingFluid.getSource(boolean)` /
-`getFlowing(int, boolean)` methods this mod could call directly. A "full" contact is therefore
-always a source state and a "partial" contact is always a flowing state, installed or not --
-there is no Flowing-Fluids-specific state representation to special-case.
+`getFlowing(int, boolean)` methods this mod could call directly: `amount >= 8 ?
+flowing.getSource(false) : flowing.getFlowing(amount, false)`.
+
+One real difference that formula implies: under Flowing Fluids, EVERY full (amount 8) cell is a
+source state (`isSource()==true`), including one still actively being fed/drained by its finite
+simulation -- Flowing Fluids has no equivalent of vanilla's distinct non-source "falling column"
+representation (`LiquidBlock`'s own `LEVEL=8` cache entry, `getFlowing(8, true)`). Mechanically,
+though, neither representation actually transfers mass on its own once formed: vanilla's falling
+flag is a rendering distinction (texture/height), not a sign of an ongoing per-tick transfer, and
+a full cell under either engine behaves like a stable, self-sustaining feed point going forward.
+So treating `isSource()==true` as always non-erosive (this mod's existing rule, matching the
+ticket's own "static/source-only contact" no-op requirement) is consistent for both engines --
+the "moving full cells" case this mod also handles (an explicit non-source, amount-8 state)
+specifically covers vanilla's distinct falling-column representation, which simply does not
+arise under Flowing Fluids' model.
 
 Flowing Fluids replaces fluid tick behaviour so a partial-amount cell can settle into a stable,
 non-advancing finite pool rather than always re-evaluating every tick the way vanilla does.
 `FlowingFluidErosion.isAdvancing` distinguishes exactly that case, for both vanilla and Flowing
-Fluids: a flowing-type cell counts as advancing only if at least one horizontal neighbour is
-empty or the same fluid at a strictly lower amount, or the downward neighbour is empty or the
-same fluid below full -- mirroring Flowing Fluids' own decompiled `canFitIntoFluid` spread
-precondition (also vanilla's own, not something Flowing Fluids introduces). A settled pool (no
-such neighbour) is treated as stationary, like a source; a cell with one is erosive. A full
-(amount 8), non-source cell -- a falling waterfall column -- is always advancing regardless, per
-the ticket's explicit "moving full cells" requirement.
+Fluids: a flowing-type cell counts as advancing only if at least one horizontal neighbouring
+BLOCK is air, or a non-air same-fluid neighbour holds a strictly lower amount; or the downward
+neighbour is air, or the same fluid below full -- mirroring Flowing Fluids' own decompiled
+`canFitIntoFluid` spread precondition (also vanilla's own, not something Flowing Fluids
+introduces). Checking the neighbouring *block* for air, not just the neighbouring *fluid state*
+for "empty," matters: an ordinary solid block's `FluidState` is also `isEmpty()` (no fluid there
+is not the same as "open to flow into"), so a fluid-state-only check would misclassify a solid
+wall as an open spread path. A settled pool (no open or lower neighbour) is treated as
+stationary, like a source; a cell with one is erosive. A full (amount 8), non-source cell -- a
+falling waterfall column -- is always advancing regardless, per the ticket's explicit "moving
+full cells" requirement (vanilla-only, per the full-cell note above).
 
-**Known approximation**: this check reads neighbouring `FluidState`s directly rather than
+Test evidence for this specifically: `stationarySettledPartialWaterReportsNoErosionAmount` /
+`anAdvancingPartialWaterReportsAPositiveErosionAmount` construct the two cases deterministically
+with hand-placed states; `realFlowingWaterAdvancesAndErodesWhatItTouches` places a genuine water
+source on open ground and lets the server's *own* scheduled fluid ticks run for real (the real
+vanilla engine, or the real Flowing Fluids engine when that mod is coinstalled) before checking
+the production decision against whatever state that real simulation produced -- not just a
+hand-constructed one.
+
+**Known approximation**: this check reads neighbouring block/fluid state directly rather than
 replicating every precondition `canFitIntoFluid` itself depends on (`canPassThroughWall`,
 `canHoldFluid` -- waterlogging and block-specific exceptions); a neighbour blocked by one of
 those edge cases could be misread as open. This is a bounded, read-only, two-hop check with no
