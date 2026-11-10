@@ -1,0 +1,76 @@
+name: Release
+
+# On every push to main, release if changelog.d gained a fragment since the
+# last tag reachable from this commit. The version is that tag bumped by the
+# highest `bump:` level among those fragments (see changelog.d/README.md);
+# nothing is committed back to main -- the tag and the GitHub release are
+# the only record of what shipped. The GitHub release jar is the shipped
+# artifact. There is no Modrinth publishing here yet. No workflow_dispatch
+# retry trigger exists, so there is no "replay an old run" path to support.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layered-slopes-flowing-fluids-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        run: |
+          last_tag=$(python3 scripts/last_release_tag.py)
+          if [ -n "$last_tag" ]; then
+            last="${last_tag#v}"
+            fragments=$(git diff --name-only --diff-filter=A "$last_tag" HEAD -- changelog.d | grep -v '/README.md$' | grep '\.md$' || true)
+          else
+            last="0.0.0"
+            fragments=$(git ls-files changelog.d | grep -v '/README.md$' | grep '\.md$' || true)
+          fi
+          if [ -n "$fragments" ]; then
+            # shellcheck disable=SC2086
+            python3 scripts/next_version.py "$last" $fragments > release-info.txt
+            version=$(head -n1 release-info.txt)
+            if git rev-parse "v$version" >/dev/null 2>&1; then
+              echo "::error::tag v$version already exists; refusing to overwrite (stale retry or collision)"
+              exit 1
+            fi
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            tail -n +2 release-info.txt > release-notes.md
+          else
+            echo "No new changelog fragments since ${last_tag:-the start}; nothing to release."
+          fi
+
+      - name: Set up JDK 21
+        if: steps.version.outputs.new == 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Build and test
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./gradlew build --no-daemon "-Pmod_version=$VERSION"
+
+      - name: Publish GitHub release
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" "build/libs/layeredslopesflowingfluids-$VERSION.jar" \
+            --target "$GITHUB_SHA" --title "layered-slopes-flowing-fluids $VERSION" --notes-file release-notes.md

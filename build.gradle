@@ -1,0 +1,174 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.147'
+    id 'idea'
+}
+
+tasks.named('wrapper', Wrapper).configure {
+    distributionType = Wrapper.DistributionType.BIN
+}
+
+group = mod_group_id
+
+// Single source of truth for the shipped version is `version=` in
+// gradle.properties, the file the release gate reads. A release workflow may
+// override it with `-Pmod_version=<version>`.
+def modVersion = (findProperty("mod_version") ?: project.version) as String
+version = modVersion
+
+sourceSets.main.resources {
+    srcDir('src/generated/resources')
+    exclude("src/generated/**/.cache")
+}
+
+repositories {
+    // layered-slopes is not on a maven repository; fetched from its GitHub release, pinned by
+    // version and verified by sha512, the same pattern dynamic-terrain and layered-slope-grading
+    // use for this exact dependency.
+    mavenCentral()
+}
+
+// layered-slopes provides the LayeredBlock/LayerMath classes this mod's erosion code consumes.
+// Required, not optional: this mod cannot function without the real registered layered blocks,
+// so this goes on compileOnly AND runtimeOnly, and is declared "required" in neoforge.mods.toml.
+//
+// `-PlayeredslopesLocalJar=<path>` overrides the release download with a locally built jar, for
+// paired-PR integration validation before a given layered-slopes release exists -- same pattern
+// dynamic-terrain's and layered-slope-grading's build.gradle use for this dependency.
+def localLayeredSlopesJar = findProperty("layeredslopesLocalJar")
+def layeredSlopesJar = localLayeredSlopesJar
+        ? layout.projectDirectory.file(localLayeredSlopesJar as String)
+        : layout.buildDirectory.file("layeredslopes/layeredslopes-${project.layeredslopes_version}.jar")
+// neoforge.mods.toml's dependency versionRange must be a real, parseable version for actual mod
+// loading (runs, GameTests) to succeed. When using the paired-PR local jar override, its own
+// gradle.properties default version (0.0.0, matching the jar filename a paired build produces)
+// is what's actually loaded, so the metadata must say that, not the real pinned version.
+def effectiveLayeredSlopesVersion = localLayeredSlopesJar ? "0.0.0" : project.layeredslopes_version
+// Captured as plain values at configuration time: the configuration cache forbids
+// 'Task.project' (any project.* access) inside doLast at execution time.
+def pinnedLayeredSlopesVersion = project.layeredslopes_version
+def pinnedLayeredSlopesSha512 = project.layeredslopes_sha512
+tasks.register("downloadLayeredSlopes") {
+    outputs.file(layeredSlopesJar)
+    onlyIf { !localLayeredSlopesJar }
+    doLast {
+        if (pinnedLayeredSlopesVersion == "UNRELEASED") {
+            throw new GradleException("layeredslopes_version/layeredslopes_sha512 in gradle.properties are still " +
+                    "a placeholder -- fill them in with the real brooswit-minecraft/layered-slopes release before " +
+                    "building, or pass -PlayeredslopesLocalJar=<path> for paired-PR integration validation only.")
+        }
+        def target = layeredSlopesJar.get().asFile
+        target.parentFile.mkdirs()
+        def url = "https://github.com/brooswit-minecraft/layered-slopes/releases/download/v${pinnedLayeredSlopesVersion}/layeredslopes-${pinnedLayeredSlopesVersion}.jar"
+        new URL(url).withInputStream { input -> target.withOutputStream { it << input } }
+        def digest = java.security.MessageDigest.getInstance("SHA-512")
+        def actual = digest.digest(target.bytes).encodeHex().toString()
+        if (actual != pinnedLayeredSlopesSha512) {
+            target.delete()
+            throw new GradleException("layered-slopes ${pinnedLayeredSlopesVersion} sha512 mismatch: ${actual}")
+        }
+    }
+}
+
+base {
+    archivesName = mod_id
+}
+
+// Mojang ships Java 21 to end users in 1.21.1, so mods target Java 21.
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        client {
+            client()
+            if (project.hasProperty('quickPlay')) {
+                programArguments.addAll('--quickPlaySingleplayer', project.property('quickPlay'))
+            }
+            if (project.hasProperty('quickPlayMp')) {
+                programArguments.addAll('--quickPlayMultiplayer', project.property('quickPlayMp'))
+            }
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+
+        server {
+            server()
+            programArgument '--nogui'
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+
+        gameTestServer {
+            type = "gameTestServer"
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+
+        data {
+            data()
+            programArguments.addAll '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()
+        }
+
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+dependencies {
+    compileOnly files(layeredSlopesJar).builtBy(tasks.named("downloadLayeredSlopes"))
+    runtimeOnly files(layeredSlopesJar).builtBy(tasks.named("downloadLayeredSlopes"))
+
+    testImplementation platform("org.junit:junit-bom:5.11.4")
+    testImplementation "org.junit.jupiter:junit-jupiter"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// Expands `${mod_version}` and friends in neoforge.mods.toml to the values
+// computed above, so the jar's file name and the version baked into the
+// built jar's mods.toml can never drift apart.
+var generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : modVersion,
+            layeredslopes_version  : effectiveLayeredSlopesVersion,
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from "src/main/templates"
+    into "build/generated/sources/modMetadata"
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}
