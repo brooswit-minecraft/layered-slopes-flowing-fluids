@@ -12,8 +12,12 @@ bump: minor
   erodes, matching how a still source already behaved. Applies identically to vanilla and to the
   optional Flowing Fluids mod, which can deliberately let a partial cell settle into such a pool.
   A full, non-source falling column always still erodes.
-- A source contact that was genuinely observed to just change (`RecentFlowActivity`, a bounded,
-  time-windowed record populated by the same `BlockEvent.NeighborNotifyEvent` any real fluid
-  update already fires) also erodes, independent of `isSource()`/fullness -- Flowing Fluids
-  represents every full cell as a source, including one it is actively feeding or draining, so
-  `isSource()` alone cannot tell that apart from a permanently static ocean or lake.
+- A source contact whose amount/source-ness was verifiably observed to just change
+  (`RecentFlowActivity`, a bounded, time-windowed record populated by the same
+  `BlockEvent.NeighborNotifyEvent` any real fluid update already fires, compared against what it
+  last actually observed there) also erodes, independent of `isSource()`/fullness -- Flowing
+  Fluids represents every full cell as a source, including one it is actively feeding or
+  draining, so `isSource()` alone cannot tell that apart from a permanently static ocean or lake.
+  Entirely inert unless Flowing Fluids is actually loaded, so the vanilla static-source rule is
+  untouched otherwise; clears on every server start and requires a nonnegative age, closing a gap
+  where a stale entry could misread as "recent" after a tick-count reset.

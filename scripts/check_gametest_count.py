@@ -24,15 +24,17 @@ class RuntimeEvidenceError(ValueError):
 
 # flowingWaterBesideAFullBlock.../flowingWaterOverTheLastLayer.../stationarySourceWater.../
 # stationarySettledPartialWater.../anAdvancingPartialWater.../aFullNonSourceFallingColumn.../
-# aSourceCellThatJustChangedErodesThenStopsAfterTheRecentWindow.../
+# aVerifiedAmountChangeAtASourceCellErodesOnlyWhileFlowingFluidsIsLoaded.../
+# anUnrelatedNeighborNotificationDoesNotMarkAnotherPositionAsRecentlyChanged.../
 # realFlowingWaterAdvancesAndErodesWhatItTouches.../aPositionAlreadyVisitedThisSecond.../
 # chanceScaleZeroDisablesAnOtherwiseGuaranteedAttempt.../aResistedRoll.../
 # aCancelledProtectionHook.../erodingAFullGrassBlock.../
 # aVanillaFactoryConstructedFullStateIsSourceAndErodesNothing.../
 # aVanillaFactoryConstructedPartialStateIsFlowingAndErodes... (same count expected whether or
-# not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: this suite
-# never branches on its presence, see FlowingFluidsCompatibilityGameTests)
-EXPECTED_REQUIRED_TEST_COUNT = 15
+# not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: several of
+# these tests deliberately branch their OWN assertion on RecentFlowActivity.isFlowingFluidsLoaded()
+# so the same 16 tests pass either way, see FlowingFluidErosionGameTests)
+EXPECTED_REQUIRED_TEST_COUNT = 16
 
 
 def verify_runtime_log(log_text):

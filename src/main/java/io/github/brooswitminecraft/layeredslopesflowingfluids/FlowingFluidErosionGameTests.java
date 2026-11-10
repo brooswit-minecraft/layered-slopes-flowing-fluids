@@ -216,63 +216,117 @@ public final class FlowingFluidErosionGameTests {
     }
 
     /**
-     * MINECRAFT-513 self-review 53037: the optional Flowing Fluids mod represents EVERY full
-     * cell as a source state, including one its own finite simulation is actively feeding or
-     * draining -- {@code isSource()} alone cannot tell that apart from a permanently static
-     * ocean or lake. {@link RecentFlowActivity} is real, mod-agnostic evidence instead: a source
-     * cell that was just genuinely changed (a real block update, firing a real
-     * {@code BlockEvent.NeighborNotifyEvent} -- not a call into {@code RecentFlowActivity}'s own
-     * internals) must erode despite {@code isSource()==true}; the SAME cell, once nothing has
-     * touched it again for longer than the recent window, must revert to the ordinary
-     * static-source no-op.
+     * MINECRAFT-513 self-review 53037/53041: the optional Flowing Fluids mod represents EVERY
+     * full cell as a source state, including one its own finite simulation is actively feeding
+     * or draining -- {@code isSource()} alone cannot tell that apart from a permanently static
+     * ocean or lake. {@link RecentFlowActivity} is real, mod-agnostic evidence instead, but
+     * self-review 53041 rejected gating it on a bare notification: a VERIFIED amount/source-ness
+     * change at the SAME position, compared against what was last actually observed there (not
+     * merely "something got notified"), is required, and it must be entirely inert unless
+     * Flowing Fluids is actually loaded -- preserving the vanilla static-source no-op otherwise.
+     * This single test exercises both halves deterministically in whichever CI job runs it: the
+     * standalone job (Flowing Fluids never loaded) must see the vanilla fallback hold even
+     * across a real amount change; the coinstalled job (Flowing Fluids loaded) must see that
+     * same real amount change erode, then revert to the ordinary no-op past the recent window.
      */
     @GameTest(template = "flat_platform", timeoutTicks = 100)
-    public static void aSourceCellThatJustChangedErodesThenStopsAfterTheRecentWindow(GameTestHelper helper) {
+    public static void aVerifiedAmountChangeAtASourceCellErodesOnlyWhileFlowingFluidsIsLoaded(GameTestHelper helper) {
         helper.setBlock(POS, Blocks.STONE.defaultBlockState());
         BlockPos contact = POS.relative(Direction.EAST);
-        // A genuine replacement (air -> source), not a call into RecentFlowActivity's own
-        // internals: this is the real BlockEvent.NeighborNotifyEvent Flowing Fluids' own
-        // setFluidStateAtPosToNewAmount/removeAllFluidAtPos fire every time they actually move
-        // fluid, confirmed by decompiling the pinned jar.
-        helper.setBlock(contact, Blocks.AIR.defaultBlockState());
+        // Establish a baseline observation (flowing, amount 4) -- a first-ever observation at a
+        // position is never itself flagged as a "change" by RecentFlowActivity.
+        helper.setBlock(contact, flowingWater(4));
+        // A genuine amount/source-ness change at the SAME position (4 -> source): the real
+        // signal RecentFlowActivity's old/new comparison exists to catch. This is exactly what
+        // Flowing Fluids' own setFluidStateAtPosToNewAmount does every time it actually moves
+        // fluid into a cell (confirmed by decompiling the pinned jar) -- this mod cannot tell
+        // that call apart from a plain Level.setBlock by provenance, only by the amount/source
+        // actually having changed, which is what is verified here either way.
         helper.setBlock(contact, Blocks.WATER.defaultBlockState());
 
+        boolean flowingFluidsLoaded = RecentFlowActivity.isFlowingFluidsLoaded();
         double justChanged = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
-        helper.assertTrue(justChanged > 0,
-                "a source cell that just genuinely changed must report a positive erosion amount despite isSource()==true, got " + justChanged);
+        if (flowingFluidsLoaded) {
+            helper.assertTrue(justChanged > 0,
+                    "with Flowing Fluids loaded, a source cell with a verified real amount change must erode despite isSource()==true, got " + justChanged);
+        } else {
+            helper.assertTrue(justChanged == 0,
+                    "without Flowing Fluids loaded, the vanilla static-source rule must hold even across a real amount change, got " + justChanged);
+        }
 
         helper.runAfterDelay(45, () -> {
             double afterSettling = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
             helper.assertTrue(afterSettling == 0,
-                    "a source cell untouched for longer than the recent window must revert to the ordinary static-source no-op, got " + afterSettling);
+                    "past the recent window (or without Flowing Fluids loaded at all), a source cell must read as the ordinary static-source no-op, got " + afterSettling);
             helper.succeed();
         });
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53041: a {@code BlockEvent.NeighborNotifyEvent} at one position
+     * must never make an unrelated position read as "recently changed" -- RecentFlowActivity is
+     * keyed per-position, not a single global flag. Also doubles as the "settled pool stays
+     * negative even while unrelated activity is happening elsewhere" case.
+     */
+    @GameTest(template = "flat_platform")
+    public static void anUnrelatedNeighborNotificationDoesNotMarkAnotherPositionAsRecentlyChanged(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, flowingWater(4));
+        // Surround it as a fully settled, non-advancing pool -- only RecentFlowActivity could
+        // make this erosive, so an unrelated notification elsewhere must never do so.
+        helper.setBlock(contact.relative(Direction.EAST), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.below(), Blocks.STONE.defaultBlockState());
+        RecentFlowActivity.forgetForTesting(helper.getLevel(), helper.absolutePos(contact));
+
+        // An unrelated position (POS.below(): never read by strongestFlowAround, which skips
+        // DOWN) gets a real, genuine amount change of its own.
+        BlockPos unrelated = POS.below();
+        helper.setBlock(unrelated, flowingWater(4));
+        helper.setBlock(unrelated, Blocks.WATER.defaultBlockState());
+
+        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(amount == 0,
+                "a verified change at an unrelated position must not make this settled pool erosive, got " + amount);
+        helper.succeed();
     }
 
     /**
      * MINECRAFT-513 self-review 53036: a synthetic, hand-constructed state does not prove the
      * decision logic reacts correctly to a REAL fluid-tick transfer. This places a genuine water
      * source on open ground and lets the server's own scheduled fluid ticks run (the real vanilla
-     * engine, or the real Flowing Fluids engine's {@code ff$tickMixin} replacement when that mod
-     * is coinstalled -- this test makes no assumption about which) for 30 real ticks, then queries
-     * the actual production decision against whatever state that real simulation produced next to
-     * the target. {@code fluid_flow_platform} (9x9 open floor) gives the spread room to still be
-     * genuinely advancing past the target at that point rather than having already filled and
-     * equalized across the whole bounded area (which {@code flat_platform}'s 3x3 footprint would
-     * risk doing almost immediately).
+     * engine, or the real Flowing Fluids engine's mixin replacement when that mod is coinstalled
+     * -- this test makes no assumption about which) before querying the actual production
+     * decision against whatever state that real simulation produced next to the target.
+     * {@code fluid_flow_platform} (9x9 open floor) gives the spread room to still be genuinely
+     * advancing past the target rather than having already filled and equalized across the
+     * whole bounded area (which {@code flat_platform}'s 3x3 footprint would risk almost
+     * immediately). Confirmed locally that vanilla and the real pinned Flowing Fluids jar
+     * coinstalled propagate at genuinely different real speeds (Flowing Fluids' whole point is
+     * slower, more finite physics) and that Flowing Fluids can also fully settle this bounded
+     * floor into a non-advancing pool again (which {@code isAdvancing} would then, correctly, no
+     * longer treat as erosive) -- so this polls every tick via {@code succeedWhen} up to the
+     * timeout rather than checking one single fixed delay, so it is not sensitive to exactly
+     * which real-time window either engine's own physics actually produces a positive reading in.
      */
     @GameTest(template = "fluid_flow_platform", timeoutTicks = 200)
     public static void realFlowingWaterAdvancesAndErodesWhatItTouches(GameTestHelper helper) {
-        BlockPos source = new BlockPos(1, 1, 1);
-        BlockPos target = new BlockPos(4, 1, 1);
+        // y=2, not y=1: confirmed by running this GameTest locally with diagnostic logging (not
+        // guessed) that this structure's own usable solid floor lands one layer higher in-world
+        // than its raw NBT data's y=0 row would suggest -- the same off-by-one a future structure
+        // edit could easily reintroduce, so it is called out here rather than left implicit.
+        BlockPos source = new BlockPos(1, 2, 1);
+        BlockPos target = new BlockPos(3, 2, 1);
         helper.setBlock(source, Blocks.WATER.defaultBlockState());
         helper.setBlock(target, Blocks.STONE.defaultBlockState());
 
-        helper.runAfterDelay(30, () -> {
+        helper.succeedWhen(() -> {
             double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(target));
             helper.assertTrue(amount > 0,
-                    "real fluid-tick physics spreading from a live source across open ground must report a positive erosion amount next to the target, got " + amount);
-            helper.succeed();
+                    "real fluid-tick physics spreading from a live source across open ground must at some point "
+                            + "report a positive erosion amount next to the target within the timeout, got " + amount);
         });
     }
 

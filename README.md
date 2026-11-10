@@ -79,37 +79,56 @@ directly rather than replicating every precondition `canFitIntoFluid` itself dep
 blocked by one of those edge cases could be misread as open. Bounded, read-only, two-hop, no
 persistent state.
 
-### RecentFlowActivity: real transfer evidence, independent of source/fullness
+### RecentFlowActivity: real, verified transfer evidence -- only while Flowing Fluids is loaded
 
-A source contact is ordinarily non-erosive -- but it also counts, at the maximum amount,
-if `RecentFlowActivity` recorded that exact position as having genuinely just changed. That
-record comes from `BlockEvent.NeighborNotifyEvent`, which already fires for every block state
-change, fluid or not (the same event Dynamic Terrain's own `CaveIns` uses for a different
-purpose) -- including every time Flowing Fluids calls `Level.setBlock` to actually move fluid
-(confirmed by decompiling `FFFluidUtils.setFluidStateAtPosToNewAmount`/`removeAllFluidAtPos`,
-both plain `setBlock` calls with neighbour-update flags). This is real, mod-agnostic evidence of
-an actual transfer, usable for a source state too -- not an API Flowing Fluids has to expose on
-purpose, and not an assumption about what a `FluidState` represents.
+A source contact is ordinarily non-erosive -- but it also counts, at the maximum amount, if
+`RecentFlowActivity` recorded that exact position's fluid amount or source-ness as having
+VERIFIABLY just changed from what it last observed there. An early version of this gated on a
+bare `BlockEvent.NeighborNotifyEvent` plus a nonempty current fluid; that was rejected (review
+53041) because a notification alone is not proof of a transfer (a manual placement or an
+unrelated generic notification also qualifies), and it ran unconditionally, making even plain
+vanilla static-source placement erosive. Fixed two ways: this class is entirely inert unless the
+optional Flowing Fluids mod is actually loaded (`ModList.get().isLoaded("flowing_fluids")`), so
+the vanilla static-source rule is untouched when it is absent; and "changed" is only ever
+recorded when a position's amount or source-ness genuinely differs from the last amount/source-
+ness this class itself observed there -- a first-ever observation only establishes that
+baseline, never itself a "change", so re-notifying the same unchanged state does nothing.
 
-Bounded by design, per the ticket's "no persistent blocks, no forced chunk loads" requirement:
-a hard-capped (4096 entries, oldest evicted first), time-windowed (40 ticks) map populated purely
-by reacting to notifications the game already sends for other reasons -- never anything this mod
-registers, places, or schedules itself. This is also why it is not built on Flowing Fluids' own
+`BlockEvent.NeighborNotifyEvent` already fires for every block state change, fluid or not (the
+same event Dynamic Terrain's own `CaveIns` uses for a different purpose) -- including every time
+Flowing Fluids calls `Level.setBlock` to actually move fluid (confirmed by decompiling
+`FFFluidUtils.setFluidStateAtPosToNewAmount`/`removeAllFluidAtPos`, both plain `setBlock` calls
+with neighbour-update flags). Comparing its reported amount/source-ness against what was last
+observed at that exact position -- while Flowing Fluids is loaded -- is real, mod-agnostic
+evidence of an actual transfer, usable for a source state too, without hooking any
+Flowing-Fluids-specific API. This is also why it is not built on Flowing Fluids' own
 `IFFFlowListener`/`FFFlowListenerLevel` push-notification API (the mechanism Create's water wheel
 uses): that API requires a persistent registered `BlockEntity` at a known position to receive
 callbacks, which this mod has none of and would have to add purely to ask "did flow just happen
 here."
 
+Bounded by design, per the ticket's "no persistent blocks, no forced chunk loads" requirement:
+a hard-capped (4096 entries, oldest evicted first), time-windowed (40 ticks) map populated purely
+by reacting to notifications the game already sends for other reasons -- never anything this mod
+registers, places, or schedules itself. Review 53041 also flagged that a bare
+`currentTick - changedTick <= window` check could read as "recent" forever after a tick-count
+reset (a fresh server/world session starting its tick counter back near zero, if a stale entry
+with a larger recorded tick survived); fixed by clearing the map outright on every server start
+AND requiring the age to be nonnegative, either of which alone already closes that gap.
+
 Test evidence: `stationarySettledPartialWaterReportsNoErosionAmount` /
 `anAdvancingPartialWaterReportsAPositiveErosionAmount` construct the geometric cases
-deterministically with hand-placed states; `aSourceCellThatJustChangedErodesThenStopsAfterTheRecentWindow`
-proves a source cell that was just genuinely changed (a real block replacement, not a call into
-`RecentFlowActivity`'s own internals) erodes despite `isSource()==true`, then reverts to the
-ordinary no-op once nothing has touched it again past the window; and
-`realFlowingWaterAdvancesAndErodesWhatItTouches` places a genuine water source on open ground and
-lets the server's *own* scheduled fluid ticks run for real (the real vanilla engine, or the real
-Flowing Fluids engine when that mod is coinstalled) before checking the production decision
-against whatever state that real simulation actually produced -- not just a hand-constructed one.
+deterministically with hand-placed states;
+`aVerifiedAmountChangeAtASourceCellErodesOnlyWhileFlowingFluidsIsLoaded` drives a real amount
+change at a source cell and branches its own assertion on whether Flowing Fluids is actually
+loaded -- proving both the real-transfer erosion (coinstalled) and the vanilla fallback
+(standalone) in the one test, then reverting to the ordinary no-op past the recent window either
+way; `anUnrelatedNeighborNotificationDoesNotMarkAnotherPositionAsRecentlyChanged` proves the
+record is scoped strictly per-position; and `realFlowingWaterAdvancesAndErodesWhatItTouches`
+places a genuine water source on open ground and polls the production decision against whatever
+the server's *own* scheduled fluid ticks actually produce next to the target, for real, under
+whichever engine (vanilla, or the real Flowing Fluids engine when that mod is coinstalled) is
+actually running -- not just a hand-constructed state.
 
 Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
 1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real
