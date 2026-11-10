@@ -25,7 +25,15 @@ import java.util.Set;
  * explicitly out of this ticket's scope (Dynamic Terrain's own heat erosion owns that). Only
  * flowing (non-source) contact counts -- see {@link FluidMath#amount}; still source water next
  * to a block is a no-op, distinguishing actively flowing fluid from static contact per the
- * ticket.
+ * ticket. {@link #isAdvancing} narrows "flowing" further to "has an actual neighbour it could
+ * still spread into right now" -- a stationary, locally-equalized flowing-type pool no-ops just
+ * like a source does, distinct from an edge still genuinely advancing downhill. This applies
+ * identically to vanilla and to the optional Flowing Fluids mod, which can let a partial-amount
+ * cell settle into exactly such a stationary pool (self-review 53031/53033): the eligibility
+ * condition mirrors Flowing Fluids' own decompiled {@code canFitIntoFluid} (a horizontal
+ * neighbour must be empty or strictly lower-amount same fluid; a downward neighbour must be
+ * empty or same fluid below full), which is also vanilla's own spread precondition -- not a
+ * Flowing-Fluids-specific signal, a shared physical one.
  *
  * <p>Sampling random positions once per second, rather than hooking fluid-flow update events, is
  * most of what keeps one flow from multiplying erosion through repeated hooks -- but that alone
@@ -104,11 +112,45 @@ public final class FlowingFluidErosion {
             if (direction == Direction.DOWN) {
                 continue;
             }
-            FluidState fluid = level.getFluidState(pos.relative(direction));
-            if (!fluid.isEmpty() && fluid.is(FluidTags.WATER)) {
+            BlockPos contactPos = pos.relative(direction);
+            FluidState fluid = level.getFluidState(contactPos);
+            if (!fluid.isEmpty() && fluid.is(FluidTags.WATER) && (fluid.isSource() || isAdvancing(level, contactPos, fluid))) {
                 strongest = Math.max(strongest, FluidMath.amount(fluid.isSource(), fluid.getAmount()));
             }
         }
         return strongest;
+    }
+
+    /**
+     * Whether the flowing (non-source) fluid at {@code fluidPos} has an actual neighbour it could
+     * still spread into right now, as opposed to a stationary pool that has already equalized.
+     * Mirrors Flowing Fluids' own decompiled {@code canFitIntoFluid} precondition (also vanilla's
+     * own spread precondition, not something Flowing Fluids introduces): a horizontal neighbour
+     * must be empty or the same fluid at a strictly lower amount; the downward neighbour must be
+     * empty or the same fluid below full (8). A full (amount 8), non-source cell -- a falling
+     * waterfall column -- is always advancing without needing a neighbour check, since vanilla's
+     * own falling-fluid mechanic keeps it moving by definition. Only called for non-source
+     * contact; a source is handled separately by the caller (sources never "advance" themselves).
+     */
+    static boolean isAdvancing(ServerLevel level, BlockPos fluidPos, FluidState fluid) {
+        if (fluid.getAmount() >= FluidMath.FULL_FLUID) {
+            return true;
+        }
+        for (Direction direction : Direction.values()) {
+            if (direction == Direction.UP) {
+                continue;
+            }
+            FluidState neighbor = level.getFluidState(fluidPos.relative(direction));
+            if (neighbor.isEmpty()) {
+                return true;
+            }
+            if (!neighbor.getType().isSame(fluid.getType())) {
+                continue;
+            }
+            if (direction == Direction.DOWN ? neighbor.getAmount() < FluidMath.FULL_FLUID : neighbor.getAmount() < fluid.getAmount()) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -23,13 +23,14 @@ class RuntimeEvidenceError(ValueError):
 
 
 # flowingWaterBesideAFullBlock.../flowingWaterOverTheLastLayer.../stationarySourceWater.../
+# stationarySettledPartialWater.../anAdvancingPartialWater.../aFullNonSourceFallingColumn.../
 # aPositionAlreadyVisitedThisSecond.../chanceScaleZeroDisablesAnOtherwiseGuaranteedAttempt.../
 # aResistedRoll.../aCancelledProtectionHook.../erodingAFullGrassBlock.../
 # aVanillaFactoryConstructedFullStateIsSourceAndErodesNothing.../
 # aVanillaFactoryConstructedPartialStateIsFlowingAndErodes... (same count expected whether or
 # not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: this suite
 # never branches on its presence, see FlowingFluidsCompatibilityGameTests)
-EXPECTED_REQUIRED_TEST_COUNT = 10
+EXPECTED_REQUIRED_TEST_COUNT = 13
 
 
 def verify_runtime_log(log_text):

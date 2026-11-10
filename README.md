@@ -7,15 +7,20 @@ NeoForge 1.21.1, Java 21. Mod ID: `layeredslopesflowingfluids`. MIT licensed.
 Extracted from Dynamic Terrain's water erosion (MINECRAFT-513). Each second, a
 bounded number of random positions around each player are sampled; an
 eligible block (a Layered Slopes layered block, or a full vanilla block with
-a registered layered variant) with *flowing* (non-source) fluid in the
+a registered layered variant) with *actively advancing* fluid in the
 `minecraft:water` tag over it or beside it has a chance to lose one layer,
-scaled by hardness/blast-resistance and how full the flowing cell is. A full
-block's first hit converts it to a 15-layer layered block; a layered block's
-last layer erodes to air. Erosion disturbs grass into dirt. Still/source
-fluid contact, and fluids outside the water tag (lava/heat erosion stays
-Dynamic Terrain's), are no-ops. A fake-player `BlockEvent.BreakEvent` is
-posted before any change so claim/protection mods that listen on it can
-veto it.
+scaled by hardness/blast-resistance and how full the flowing cell is. "Actively
+advancing" means more than just non-source: a flowing-type cell that has
+already equalized with its neighbours (nowhere lower to spread into) is
+treated as stationary and does not erode, exactly like a still source --
+only a cell with a genuinely open or lower-amount neighbour to flow into
+(or a full, non-source falling column, which is always advancing) counts.
+A full block's first hit converts it to a 15-layer layered block; a layered
+block's last layer erodes to air. Erosion disturbs grass into dirt.
+Stationary fluid contact, and fluids outside the water tag (lava/heat
+erosion stays Dynamic Terrain's), are no-ops. A fake-player
+`BlockEvent.BreakEvent` is posted before any change so claim/protection
+mods that listen on it can veto it.
 
 Required dependency: [Layered Slopes](https://github.com/brooswit-minecraft/layered-slopes)
 only (pinned by version + sha512 in `gradle.properties`), the same pattern
@@ -45,14 +50,25 @@ through the exact same public vanilla `FlowingFluid.getSource(boolean)` /
 always a source state and a "partial" contact is always a flowing state, installed or not --
 there is no Flowing-Fluids-specific state representation to special-case.
 
-**Remaining limit, not silently assumed away**: Flowing Fluids replaces fluid tick behaviour so
-a partial-amount cell can settle into a stable, non-advancing finite pool rather than always
-re-evaluating every tick the way vanilla does. This mod reads a `FluidState`'s
-`isSource()`/`getAmount()` at the instant it samples a position regardless of which mod produced
-that state, and Flowing Fluids changes neither query's meaning -- so this mod's erosion decision
-is unaffected by that simulation difference, but it also means this mod cannot distinguish "a
-cell still actively advancing" from "a cell Flowing Fluids has let settle" -- both read as an
-ordinary flowing state and both erode under the same rules a vanilla flowing edge would.
+Flowing Fluids replaces fluid tick behaviour so a partial-amount cell can settle into a stable,
+non-advancing finite pool rather than always re-evaluating every tick the way vanilla does.
+`FlowingFluidErosion.isAdvancing` distinguishes exactly that case, for both vanilla and Flowing
+Fluids: a flowing-type cell counts as advancing only if at least one horizontal neighbour is
+empty or the same fluid at a strictly lower amount, or the downward neighbour is empty or the
+same fluid below full -- mirroring Flowing Fluids' own decompiled `canFitIntoFluid` spread
+precondition (also vanilla's own, not something Flowing Fluids introduces). A settled pool (no
+such neighbour) is treated as stationary, like a source; a cell with one is erosive. A full
+(amount 8), non-source cell -- a falling waterfall column -- is always advancing regardless, per
+the ticket's explicit "moving full cells" requirement.
+
+**Known approximation**: this check reads neighbouring `FluidState`s directly rather than
+replicating every precondition `canFitIntoFluid` itself depends on (`canPassThroughWall`,
+`canHoldFluid` -- waterlogging and block-specific exceptions); a neighbour blocked by one of
+those edge cases could be misread as open. This is a bounded, read-only, two-hop check with no
+persistent state, world scanning, or forced chunk loads -- it does not use Flowing Fluids'
+`IFFFlowListener`/`FFFlowListenerLevel` push-notification API (the mechanism Create's water
+wheel uses), which requires a persistent registered `BlockEntity` at a known position and so
+does not fit this mod's stateless random-sampling design.
 
 Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
 1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real

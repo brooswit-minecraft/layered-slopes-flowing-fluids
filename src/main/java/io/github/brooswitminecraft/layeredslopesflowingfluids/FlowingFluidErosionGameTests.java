@@ -45,7 +45,11 @@ public final class FlowingFluidErosionGameTests {
     private FlowingFluidErosionGameTests() {}
 
     private static BlockState flowingWater() {
-        return Blocks.WATER.defaultBlockState().setValue(LiquidBlock.LEVEL, 3);
+        return flowingWater(3);
+    }
+
+    private static BlockState flowingWater(int amount) {
+        return Blocks.WATER.defaultBlockState().setValue(LiquidBlock.LEVEL, amount);
     }
 
     /**
@@ -80,7 +84,11 @@ public final class FlowingFluidErosionGameTests {
     public static void flowingWaterBesideAFullBlockConvertsItToFifteenLayers(GameTestHelper helper) {
         withErosionEnabled(() -> {
             helper.setBlock(POS, Blocks.STONE.defaultBlockState());
-            helper.setBlock(POS.relative(Direction.EAST), flowingWater());
+            BlockPos contact = POS.relative(Direction.EAST);
+            helper.setBlock(contact, flowingWater());
+            // An explicit empty neighbour makes this contact cell genuinely advancing (isAdvancing),
+            // not just "non-source" -- deterministic regardless of the template's own default terrain.
+            helper.setBlock(contact.relative(Direction.EAST), Blocks.AIR.defaultBlockState());
 
             double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
             helper.assertTrue(amount > 0, "flowing water beside the block must report a positive erosion amount");
@@ -101,7 +109,11 @@ public final class FlowingFluidErosionGameTests {
     public static void flowingWaterOverTheLastLayerErodesItToAir(GameTestHelper helper) {
         withErosionEnabled(() -> {
             helper.setBlock(POS, LayeredSlopesMod.LAYERED_STONE.get().defaultBlockState().setValue(LayeredBlock.LAYERS, 1));
-            helper.setBlock(POS.above(), flowingWater());
+            BlockPos contact = POS.above();
+            helper.setBlock(contact, flowingWater());
+            // An explicit empty neighbour makes this contact cell genuinely advancing (isAdvancing),
+            // not just "non-source" -- deterministic regardless of the template's own default terrain.
+            helper.setBlock(contact.relative(Direction.EAST), Blocks.AIR.defaultBlockState());
 
             double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
             helper.assertTrue(amount > 0, "flowing water over the block must report a positive erosion amount");
@@ -121,6 +133,78 @@ public final class FlowingFluidErosionGameTests {
         double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
         helper.assertTrue(amount == 0, "still source water must never report an erosion amount, got " + amount);
         helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "the block must stay unchanged next to still source water");
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53031/53033: a flowing-type (non-source) contact cell that has
+     * already equalized -- every neighbour is either solid or same-fluid at an amount it cannot
+     * flow into -- must report no erosion amount, exactly like a source does, distinguishing a
+     * stationary pool from a genuinely advancing edge. This matters for both vanilla (a settled
+     * lake-shore edge) and the optional Flowing Fluids mod (which can deliberately let a
+     * partial-amount cell settle into exactly such a stationary, non-advancing pool).
+     */
+    @GameTest(template = "flat_platform")
+    public static void stationarySettledPartialWaterReportsNoErosionAmount(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, flowingWater(4));
+        // Surround the contact cell on every other side (and below) with solid stone: no empty
+        // neighbour, no lower-amount same-fluid neighbour -- isAdvancing must be false.
+        helper.setBlock(contact.relative(Direction.EAST), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.below(), Blocks.STONE.defaultBlockState());
+
+        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(amount == 0, "a fully equalized, non-advancing flowing-type pool must never report an erosion amount, got " + amount);
+        helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "the block must stay unchanged next to a settled pool");
+        helper.succeed();
+    }
+
+    /**
+     * The same equalized surroundings as {@link #stationarySettledPartialWaterReportsNoErosionAmount},
+     * except the contact cell's downward neighbour is open -- it is still genuinely advancing
+     * (could still flow down into that gap) and must erode normally.
+     */
+    @GameTest(template = "flat_platform")
+    public static void anAdvancingPartialWaterReportsAPositiveErosionAmount(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, flowingWater(4));
+        helper.setBlock(contact.relative(Direction.EAST), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.below(), Blocks.AIR.defaultBlockState());
+
+        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(amount > 0, "a flowing-type cell with an open neighbour to fall into must report a positive erosion amount, got " + amount);
+        helper.succeed();
+    }
+
+    /**
+     * A full (amount 8), non-source cell is a falling waterfall column: it must always be treated
+     * as advancing, with no neighbour check, matching the ticket's explicit "moving full cells"
+     * erosion requirement.
+     */
+    @GameTest(template = "flat_platform")
+    public static void aFullNonSourceFallingColumnReportsTheMaximumErosionAmount(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        // LiquidBlock.LEVEL=8 is specifically the falling-column cache entry (fluid.getFlowing(8, true):
+        // amount=8, falling=true, isSource()=false) -- confirmed by decompiling vanilla's own
+        // LiquidBlock constructor, which builds its 9-entry stateCache exactly this way.
+        helper.setBlock(contact, flowingWater(8));
+        // Fully enclosed: a settled/equalized cell would report 0, but a full non-source cell must
+        // report the maximum amount regardless, since it is always treated as advancing.
+        helper.setBlock(contact.relative(Direction.EAST), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.below(), Blocks.STONE.defaultBlockState());
+
+        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(amount == FluidMath.FLOWING,
+                "a full non-source falling column must report the maximum erosion amount regardless of neighbours, got " + amount);
         helper.succeed();
     }
 
