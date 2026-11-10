@@ -70,6 +70,33 @@ tasks.register("downloadLayeredSlopes") {
     }
 }
 
+// Flowing Fluids (Traben-0/flowing_fluids), test-only and OPTIONAL: no compileOnly dependency
+// exists because this mod never references any of its classes (see gradle.properties' comment
+// on flowingfluids_version for why that's safe -- it mixes into vanilla Fluids.WATER/Fluids.LAVA
+// rather than registering new fluid types). `-PcoinstallFlowingFluids=true` adds the real, pinned,
+// sha512-verified jar to the GameTestServer run's classpath only, as acceptance evidence that the
+// same GameTests pass with it actually installed; the ordinary build/test/GameTest run never
+// includes it, so standalone (vanilla-only) evidence stays the default.
+def coinstallFlowingFluids = project.hasProperty("coinstallFlowingFluids")
+def flowingFluidsJar = layout.buildDirectory.file("flowingfluids/flowing_fluids-${project.flowingfluids_version}.jar")
+def pinnedFlowingFluidsUrl = project.flowingfluids_url
+def pinnedFlowingFluidsSha512 = project.flowingfluids_sha512
+tasks.register("downloadFlowingFluids") {
+    outputs.file(flowingFluidsJar)
+    onlyIf { coinstallFlowingFluids }
+    doLast {
+        def target = flowingFluidsJar.get().asFile
+        target.parentFile.mkdirs()
+        new URL(pinnedFlowingFluidsUrl).withInputStream { input -> target.withOutputStream { it << input } }
+        def digest = java.security.MessageDigest.getInstance("SHA-512")
+        def actual = digest.digest(target.bytes).encodeHex().toString()
+        if (actual != pinnedFlowingFluidsSha512) {
+            target.delete()
+            throw new GradleException("flowing_fluids ${project.flowingfluids_version} sha512 mismatch: ${actual}")
+        }
+    }
+}
+
 base {
     archivesName = mod_id
 }
@@ -129,6 +156,9 @@ neoForge {
 dependencies {
     compileOnly files(layeredSlopesJar).builtBy(tasks.named("downloadLayeredSlopes"))
     runtimeOnly files(layeredSlopesJar).builtBy(tasks.named("downloadLayeredSlopes"))
+    if (coinstallFlowingFluids) {
+        runtimeOnly files(flowingFluidsJar).builtBy(tasks.named("downloadFlowingFluids"))
+    }
 
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"

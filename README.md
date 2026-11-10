@@ -30,6 +30,39 @@ Server config (`erosionEnabled`, `samplesPerSecond`, `chanceScale`) defaults ero
 configures cadence (how often positions are sampled); `chanceScale` (0.0-1.0, default 1.0)
 independently configures the erosion-probability curve itself, down to fully off.
 
+## Vanilla minecraft, or Flowing Fluids if installed
+
+The goal (per the ticket) is to cover plain vanilla water, and also work unchanged if the
+[Flowing Fluids](https://modrinth.com/mod/flowing-fluids) mod (Traben-0/flowing_fluids) is
+additionally installed -- Flowing Fluids stays entirely **optional**: this mod has no
+dependency on it in `neoforge.mods.toml` and no compile-time reference to any of its classes.
+That's possible because Flowing Fluids mixes directly into vanilla `Fluids.WATER`/`Fluids.LAVA`
+(the same `FlowingFluid` subclasses this mod already reads through plain
+`FluidState.isSource()`/`getAmount()`) rather than registering new fluid types -- confirmed by
+decompiling its pinned jar: its own `FFFluidUtils.getStateForFluidByAmount` builds every state
+through the exact same public vanilla `FlowingFluid.getSource(boolean)` /
+`getFlowing(int, boolean)` methods this mod could call directly. A "full" contact is therefore
+always a source state and a "partial" contact is always a flowing state, installed or not --
+there is no Flowing-Fluids-specific state representation to special-case.
+
+**Remaining limit, not silently assumed away**: Flowing Fluids replaces fluid tick behaviour so
+a partial-amount cell can settle into a stable, non-advancing finite pool rather than always
+re-evaluating every tick the way vanilla does. This mod reads a `FluidState`'s
+`isSource()`/`getAmount()` at the instant it samples a position regardless of which mod produced
+that state, and Flowing Fluids changes neither query's meaning -- so this mod's erosion decision
+is unaffected by that simulation difference, but it also means this mod cannot distinguish "a
+cell still actively advancing" from "a cell Flowing Fluids has let settle" -- both read as an
+ordinary flowing state and both erode under the same rules a vanilla flowing edge would.
+
+Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
+1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real
+[Modrinth-hosted artifact](https://modrinth.com/mod/flowing-fluids/version/1.0.8-neoforge-1.21)
+(verified: downloaded and hashed, not installed into a live server). See
+`FlowingFluidsCompatibilityGameTests` for the standalone regression evidence, and CI's separate
+"Run GameTests with Flowing Fluids coinstalled" job (`-PcoinstallFlowingFluids=true`) for the
+real-artifact coinstalled acceptance evidence -- the same GameTest suite, re-run with that real,
+verified jar also on the GameTestServer's runtime classpath.
+
 ## Building
 
 Requires a JDK 21 with `javac` on `JAVA_HOME`.

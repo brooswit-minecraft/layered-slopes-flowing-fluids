@@ -34,7 +34,8 @@ jobs:
       # tests, so a green exit code alone proves nothing (same guard pattern as layered-slopes'
       # MINECRAFT-499 CI). check_gametest_count.py fails closed unless every named test below
       # actually ran and passed: the over/beside/first-conversion/final-layer/dedup/chance-scale/
-      # resisted/protected/grass-disturbance acceptance evidence for MINECRAFT-513.
+      # resisted/protected/grass-disturbance/FF-compatibility acceptance evidence for MINECRAFT-513.
+      # This job is the standalone (vanilla-only, Flowing Fluids NOT on the classpath) run.
       - name: Run GameTests
         run: |
           set -o pipefail
@@ -47,6 +48,30 @@ jobs:
           name: layered-slopes-flowing-fluids
           path: build/libs/*.jar
           if-no-files-found: error
+
+  # MINECRAFT-513 (comment 53021): the same GameTest suite, re-run with the real, pinned,
+  # sha512-verified Flowing Fluids mod (Traben-0/flowing_fluids v1.0.8-1.21-neoforge) also on the
+  # GameTestServer's runtime classpath -- the coinstalled acceptance evidence that this mod's
+  # fluid-erosion code is unaffected by that mod's presence, not just standalone reasoning about
+  # it. Separate job (not a step in `build`) so a transient Modrinth CDN fetch failure cannot
+  # block the always-required standalone build.
+  coinstalled-flowing-fluids:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Run GameTests with Flowing Fluids coinstalled
+        run: |
+          set -o pipefail
+          ./gradlew runGameTestServer --no-daemon -PcoinstallFlowingFluids=true 2>&1 | tee gametest-ff.log
+          python3 scripts/check_gametest_count.py gametest-ff.log
 
   release-gate:
     uses: brooswit-factory/release-gate/.github/workflows/gate.yml@v1
