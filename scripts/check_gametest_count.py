@@ -24,17 +24,18 @@ class RuntimeEvidenceError(ValueError):
 
 # flowingWaterBesideAFullBlock.../flowingWaterOverTheLastLayer.../stationarySourceWater.../
 # stationarySettledPartialWater.../anAdvancingPartialWater.../aFullNonSourceFallingColumn.../
-# aVerifiedAmountChangeAtASourceCellErodesOnlyWhileFlowingFluidsIsLoaded.../
+# aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids.../
 # anUnrelatedNeighborNotificationDoesNotMarkAnotherPositionAsRecentlyChanged.../
-# realFlowingWaterAdvancesAndErodesWhatItTouches.../aPositionAlreadyVisitedThisSecond.../
+# realFlowingWaterAdvancesAndErodesWhatItTouches.../
+# aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp.../aPositionAlreadyVisitedThisSecond.../
 # chanceScaleZeroDisablesAnOtherwiseGuaranteedAttempt.../aResistedRoll.../
 # aCancelledProtectionHook.../erodingAFullGrassBlock.../
 # aVanillaFactoryConstructedFullStateIsSourceAndErodesNothing.../
 # aVanillaFactoryConstructedPartialStateIsFlowingAndErodes... (same count expected whether or
-# not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: several of
-# these tests deliberately branch their OWN assertion on RecentFlowActivity.isFlowingFluidsLoaded()
-# so the same 16 tests pass either way, see FlowingFluidErosionGameTests)
-EXPECTED_REQUIRED_TEST_COUNT = 16
+# not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: these tests
+# erode via whichever real engine's own physics is actually active, never by assuming which one;
+# see FlowingFluidErosionGameTests)
+EXPECTED_REQUIRED_TEST_COUNT = 17
 
 
 def verify_runtime_log(log_text):

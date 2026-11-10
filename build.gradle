@@ -73,17 +73,20 @@ tasks.register("downloadLayeredSlopes") {
 // Flowing Fluids (Traben-0/flowing_fluids), test-only and OPTIONAL: no compileOnly dependency
 // exists because this mod never references any of its classes (see gradle.properties' comment
 // on flowingfluids_version for why that's safe -- it mixes into vanilla Fluids.WATER/Fluids.LAVA
-// rather than registering new fluid types). `-PcoinstallFlowingFluids=true` adds the real, pinned,
-// sha512-verified jar to the GameTestServer run's classpath only, as acceptance evidence that the
-// same GameTests pass with it actually installed; the ordinary build/test/GameTest run never
-// includes it, so standalone (vanilla-only) evidence stays the default.
+// rather than registering new fluid types). FlowingFluidsCompat (compileOnly, like Dynamic
+// Atmosphere's AtmosphereCompat in dynamic-vehicles) references its real FlowingFluids/FFConfig
+// classes directly to query whether it is actually governing water right now and whether a
+// notification is firing from inside its own tick -- so the pinned jar is downloaded and put on
+// the compile classpath unconditionally. `-PcoinstallFlowingFluids=true` additionally adds it to
+// the GameTestServer run's RUNTIME classpath, as acceptance evidence that the same GameTests
+// pass with it actually installed; the ordinary build/test/GameTest run never includes it at
+// runtime, so standalone (vanilla-only, ModList.isLoaded()==false) evidence stays the default.
 def coinstallFlowingFluids = project.hasProperty("coinstallFlowingFluids")
 def flowingFluidsJar = layout.buildDirectory.file("flowingfluids/flowing_fluids-${project.flowingfluids_version}.jar")
 def pinnedFlowingFluidsUrl = project.flowingfluids_url
 def pinnedFlowingFluidsSha512 = project.flowingfluids_sha512
 tasks.register("downloadFlowingFluids") {
     outputs.file(flowingFluidsJar)
-    onlyIf { coinstallFlowingFluids }
     doLast {
         def target = flowingFluidsJar.get().asFile
         target.parentFile.mkdirs()
@@ -156,6 +159,7 @@ neoForge {
 dependencies {
     compileOnly files(layeredSlopesJar).builtBy(tasks.named("downloadLayeredSlopes"))
     runtimeOnly files(layeredSlopesJar).builtBy(tasks.named("downloadLayeredSlopes"))
+    compileOnly files(flowingFluidsJar).builtBy(tasks.named("downloadFlowingFluids"))
     if (coinstallFlowingFluids) {
         runtimeOnly files(flowingFluidsJar).builtBy(tasks.named("downloadFlowingFluids"))
     }
