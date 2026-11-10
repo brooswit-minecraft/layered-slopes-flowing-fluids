@@ -324,17 +324,20 @@ public final class FlowingFluidErosionGameTests {
     }
 
     /**
-     * MINECRAFT-513 self-review 53049/53050/53051: proves a real, physics-driven fill to a full
-     * cell erodes, then genuinely settles to no-op, with NO manual edit of the fed position
-     * itself after the feed starts -- the gap {@link #aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids}
-     * deliberately does not close, since nothing there is actually fed by real physics. A single
-     * source feeds straight down into a cell enclosed on every other side (confirmed locally:
-     * under the real pinned Flowing Fluids jar this confined cell actually fills to a genuine
-     * full source and {@link RecentFlowActivity} verifies it as recently changed; under vanilla
-     * the same confinement produces its own always-advancing full non-source falling column, so
-     * this erodes under either engine without the test needing to assume which is active).
-     * Removing the feed and waiting past the recent window proves the erosion stops once nothing
-     * is actually still touching that position -- confirmed locally under both engines.
+     * MINECRAFT-513 self-review 53049/53050/53051/53074: proves a real, physics-driven fill to a
+     * FULL cell at the exact fed position, attributed specifically to {@link RecentFlowActivity}
+     * (not merely a nonzero aggregate reading a partial cell could also satisfy), erodes --
+     * with NO manual edit of the fed position itself after the feed starts, the gap {@link
+     * #aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids} deliberately does not close.
+     * A single source feeds straight down into a cell enclosed on every other side (confirmed
+     * locally: under the real pinned Flowing Fluids jar this confined cell actually fills to a
+     * genuine full source; under vanilla the same confinement produces its own always-advancing
+     * full non-source falling column, so the aggregate erosion check still passes under either
+     * engine without assuming which is active, while the exact-position assertions below are
+     * specific to Flowing Fluids actually being active). Removing the feed and waiting past the
+     * recent window proves the fluid is RETAINED, stationary, with erosion genuinely stopped --
+     * not merely drained away, which {@code amount == 0} alone could not tell apart -- confirmed
+     * locally under both engines.
      */
     @GameTest(template = "fluid_flow_platform", timeoutTicks = 200)
     public static void aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp(GameTestHelper helper) {
@@ -355,29 +358,56 @@ public final class FlowingFluidErosionGameTests {
         // settles once the feed is gone. A guard flag keeps the phase-1 side effect (removing the
         // source) from repeating on every subsequent tick once it has already fired.
         var feedRemoved = new boolean[1];
+        var viaRecentFlowActivity = new boolean[1];
         helper.onEachTick(() -> {
             if (feedRemoved[0]) {
                 return;
             }
-            double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(contact));
-            if (amount <= 0) {
+            var level = (net.minecraft.server.level.ServerLevel) helper.getLevel();
+            var absoluteFed = helper.absolutePos(fed);
+            var fedFluid = level.getFluidState(absoluteFed);
+            boolean fedIsFullAndVerified = fedFluid.getAmount() >= FluidMath.FULL_FLUID && fedFluid.isSource()
+                    && RecentFlowActivity.recentlyChanged(level, absoluteFed);
+            double amount = FlowingFluidErosion.strongestFlowAround(level, helper.absolutePos(contact));
+            boolean fedIsFullUnderVanilla = fedFluid.getAmount() >= FluidMath.FULL_FLUID && !fedFluid.isSource();
+            if (amount <= 0 || !(fedIsFullAndVerified || fedIsFullUnderVanilla)) {
                 return;
             }
             feedRemoved[0] = true;
+            viaRecentFlowActivity[0] = fedIsFullAndVerified;
             helper.setBlock(source, Blocks.AIR.defaultBlockState());
             helper.runAfterDelay(60, () -> {
-                double afterSettling = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(contact));
+                var afterFluid = level.getFluidState(absoluteFed);
+                if (viaRecentFlowActivity[0]) {
+                    // A genuine Flowing Fluids source is self-sustaining once created: it must
+                    // stay right there, stationary, with erosion genuinely stopped -- not merely
+                    // drained away, which amount == 0 alone could not tell apart.
+                    helper.assertTrue(!afterFluid.isEmpty(),
+                            "60 ticks after the feed is removed, a real Flowing Fluids source must retain its "
+                                    + "stationary fluid rather than drain away, got " + afterFluid);
+                } else {
+                    // Vanilla's own non-source falling column is NOT self-sustaining: with
+                    // nothing feeding it any more, draining away to empty is its own correct,
+                    // unforced "settled" outcome here, not a sign the check below is vacuous --
+                    // confirmed locally that it reliably does drain within this window.
+                    helper.assertTrue(afterFluid.isEmpty(),
+                            "60 ticks after the feed is removed, vanilla's unfed falling column must have drained "
+                                    + "away, got " + afterFluid);
+                }
+                helper.assertTrue(!RecentFlowActivity.recentlyChanged(level, absoluteFed),
+                        "60 ticks after the feed is removed, with no further real physics touching it, this "
+                                + "position must no longer verify as recently changed");
+                double afterSettling = FlowingFluidErosion.strongestFlowAround(level, helper.absolutePos(contact));
                 helper.assertTrue(afterSettling == 0,
-                        "60 ticks after the feed is removed, with no further real physics touching it, this must "
-                                + "settle to the ordinary no-op, got " + afterSettling
-                                + " (fed cell fluid state: " + helper.getLevel().getFluidState(helper.absolutePos(fed)) + ")");
+                        "60 ticks after the feed is removed, this must settle to the ordinary no-op, got " + afterSettling
+                                + " (fed cell fluid state: " + afterFluid + ")");
                 helper.succeed();
             });
         });
         helper.runAfterDelay(100, () -> {
             if (!feedRemoved[0]) {
-                helper.fail("a real physics-driven fill of an enclosed cell must report a positive erosion amount "
-                        + "next to it within 100 ticks, got " + FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(contact))
+                helper.fail("a real physics-driven fill of an enclosed cell to full must verify and erode "
+                        + "within 100 ticks, got amount=" + FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(contact))
                         + " (fed cell fluid state: " + helper.getLevel().getFluidState(helper.absolutePos(fed)) + ")");
             }
         });

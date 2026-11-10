@@ -25,4 +25,7 @@ bump: minor
   permanently static ocean or lake. A manual edit (even one Flowing Fluids is loaded and
   governing for) never counts, since it never runs while that flag is true; clears on every
   server start and requires a nonnegative age, closing a gap where a stale entry could misread as
-  "recent" after a tick-count reset.
+  "recent" after a tick-count reset. Also clears a position's record outright (not merely skips
+  recording a new one) on any notification that does not itself qualify, and re-checks that the
+  fluid currently at a position is still nonempty and governed before trusting any stored record
+  there at all -- closing a gap where a stale record could outlive the fluid it was made about.

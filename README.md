@@ -117,6 +117,16 @@ push-notification API (the mechanism Create's water wheel uses): that API requir
 registered `BlockEntity` at a known position to receive callbacks, which this mod has none of and
 would have to add purely to ask "did flow just happen here."
 
+Review 53074 found a further staleness gap: a position could keep reading as "recently changed"
+for up to the rest of the window after the fluid there became empty, manually replaced, or
+otherwise no longer Flowing-Fluids-governed, since only the write path checked those conditions.
+Fixed two ways, either of which alone would close it: any notification that does not qualify
+(empty, not governed, or not actually happening during Flowing Fluids' own tick) now DISCARDS any
+existing record for that exact position rather than merely skipping a new one; and the read path
+itself re-checks that the fluid CURRENTLY at that position is still nonempty and governed before
+even consulting the stored timestamp, rather than trusting a record made against a possibly
+different fluid that was there before.
+
 Test evidence: `stationarySettledPartialWaterReportsNoErosionAmount` /
 `anAdvancingPartialWaterReportsAPositiveErosionAmount` construct the geometric cases
 deterministically with hand-placed states; `aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids`
@@ -128,11 +138,15 @@ water source and polls the production decision against whatever the server's *ow
 fluid ticks actually produce next to the target, for real, under whichever engine (vanilla, or
 the real Flowing Fluids engine when that mod is coinstalled) is actually running; and
 `aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp` feeds a confined cell to full with no
-manual edit of the fed position itself, proving it erodes via a verified real transfer (under
-Flowing Fluids) or the always-advancing full non-source falling column (under vanilla) --
-confirmed locally that Flowing Fluids actually fills it to a genuine full source and
-`RecentFlowActivity` verifies it -- then removes the feed and proves it genuinely settles back to
-the ordinary no-op.
+manual edit of the fed position itself, directly asserting the exact fed position actually
+reached a full `isSource()` state verified by `RecentFlowActivity` (under Flowing Fluids) or the
+always-advancing full non-source falling column (under vanilla) -- not merely a nonzero aggregate
+reading a partial cell could also satisfy -- then removes the feed and proves erosion genuinely
+stops: under Flowing Fluids the source is retained, stationary, with `RecentFlowActivity` no
+longer verifying it; under vanilla's own non-source falling column, with nothing left feeding it,
+draining away to empty is its own correct "settled" outcome, confirmed locally under both
+engines -- distinguishing "stopped because it settled" from "stopped because it merely drained
+away" matters because `amount == 0` alone cannot tell those apart.
 
 Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
 1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real

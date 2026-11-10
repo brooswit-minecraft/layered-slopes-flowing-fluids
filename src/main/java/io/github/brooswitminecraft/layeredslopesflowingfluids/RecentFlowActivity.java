@@ -73,19 +73,32 @@ final class RecentFlowActivity {
             return;
         }
         FluidState fluid = event.getState().getFluidState();
+        GlobalPos key = GlobalPos.of(level.dimension(), event.getPos());
+        // Any notification that does NOT qualify (empty, not Flowing-Fluids-governed, or not
+        // actually happening during its own tick -- a manual edit) discards any existing record
+        // for this exact position, not merely skips adding a new one: self-review 53074 found
+        // that leaving a stale record in place let an empty/manual-replaced/non-governed cell
+        // keep reading as "recently changed" for up to the rest of the window after the real
+        // transfer evidence it was based on no longer applies.
         if (fluid.isEmpty() || !FlowingFluidsCompat.isGoverning(fluid) || !FlowingFluidsCompat.isCurrentlyTicking()) {
+            lastVerifiedTick.remove(key);
             return;
         }
-        GlobalPos key = GlobalPos.of(level.dimension(), event.getPos());
         lastVerifiedTick.put(key, (long) level.getServer().getTickCount());
     }
 
     /**
      * Whether {@code pos} was verified to actually be touched by Flowing Fluids' own tick
      * within the recent window -- always false whenever Flowing Fluids is absent, disabled, or
-     * not governing the fluid there.
+     * not governing the fluid CURRENTLY there (self-review 53074: the fluid actually present at
+     * read time, not merely whatever it was when the record was made, since a position's fluid
+     * can change without ever firing a disqualifying notification this class happens to see).
      */
     static boolean recentlyChanged(ServerLevel level, BlockPos pos) {
+        FluidState fluid = level.getFluidState(pos);
+        if (fluid.isEmpty() || !FlowingFluidsCompat.isGoverning(fluid)) {
+            return false;
+        }
         Long changedAt = lastVerifiedTick.get(GlobalPos.of(level.dimension(), pos));
         if (changedAt == null) {
             return false;
