@@ -52,15 +52,11 @@ flowing.getSource(false) : flowing.getFlowing(amount, false)`.
 One real difference that formula implies: under Flowing Fluids, EVERY full (amount 8) cell is a
 source state (`isSource()==true`), including one still actively being fed/drained by its finite
 simulation -- Flowing Fluids has no equivalent of vanilla's distinct non-source "falling column"
-representation (`LiquidBlock`'s own `LEVEL=8` cache entry, `getFlowing(8, true)`). Mechanically,
-though, neither representation actually transfers mass on its own once formed: vanilla's falling
-flag is a rendering distinction (texture/height), not a sign of an ongoing per-tick transfer, and
-a full cell under either engine behaves like a stable, self-sustaining feed point going forward.
-So treating `isSource()==true` as always non-erosive (this mod's existing rule, matching the
-ticket's own "static/source-only contact" no-op requirement) is consistent for both engines --
-the "moving full cells" case this mod also handles (an explicit non-source, amount-8 state)
-specifically covers vanilla's distinct falling-column representation, which simply does not
-arise under Flowing Fluids' model.
+representation (`LiquidBlock`'s own `LEVEL=8` cache entry, `getFlowing(8, true)`). That means
+`isSource()` alone cannot tell a genuinely still-transferring full cell apart from a permanently
+static ocean or lake once Flowing Fluids is involved -- treating every source as non-erosive
+would silently miss real Flowing Fluids transfers. `RecentFlowActivity` is the fix (see below):
+real, mod-agnostic change evidence, not a state-representation assumption.
 
 Flowing Fluids replaces fluid tick behaviour so a partial-amount cell can settle into a stable,
 non-advancing finite pool rather than always re-evaluating every tick the way vanilla does.
@@ -77,22 +73,43 @@ stationary, like a source; a cell with one is erosive. A full (amount 8), non-so
 falling waterfall column -- is always advancing regardless, per the ticket's explicit "moving
 full cells" requirement (vanilla-only, per the full-cell note above).
 
-Test evidence for this specifically: `stationarySettledPartialWaterReportsNoErosionAmount` /
-`anAdvancingPartialWaterReportsAPositiveErosionAmount` construct the two cases deterministically
-with hand-placed states; `realFlowingWaterAdvancesAndErodesWhatItTouches` places a genuine water
-source on open ground and lets the server's *own* scheduled fluid ticks run for real (the real
-vanilla engine, or the real Flowing Fluids engine when that mod is coinstalled) before checking
-the production decision against whatever state that real simulation produced -- not just a
-hand-constructed one.
+**Known approximation** (`isAdvancing`): this check reads neighbouring block/fluid state
+directly rather than replicating every precondition `canFitIntoFluid` itself depends on
+(`canPassThroughWall`, `canHoldFluid` -- waterlogging and block-specific exceptions); a neighbour
+blocked by one of those edge cases could be misread as open. Bounded, read-only, two-hop, no
+persistent state.
 
-**Known approximation**: this check reads neighbouring block/fluid state directly rather than
-replicating every precondition `canFitIntoFluid` itself depends on (`canPassThroughWall`,
-`canHoldFluid` -- waterlogging and block-specific exceptions); a neighbour blocked by one of
-those edge cases could be misread as open. This is a bounded, read-only, two-hop check with no
-persistent state, world scanning, or forced chunk loads -- it does not use Flowing Fluids'
-`IFFFlowListener`/`FFFlowListenerLevel` push-notification API (the mechanism Create's water
-wheel uses), which requires a persistent registered `BlockEntity` at a known position and so
-does not fit this mod's stateless random-sampling design.
+### RecentFlowActivity: real transfer evidence, independent of source/fullness
+
+A source contact is ordinarily non-erosive -- but it also counts, at the maximum amount,
+if `RecentFlowActivity` recorded that exact position as having genuinely just changed. That
+record comes from `BlockEvent.NeighborNotifyEvent`, which already fires for every block state
+change, fluid or not (the same event Dynamic Terrain's own `CaveIns` uses for a different
+purpose) -- including every time Flowing Fluids calls `Level.setBlock` to actually move fluid
+(confirmed by decompiling `FFFluidUtils.setFluidStateAtPosToNewAmount`/`removeAllFluidAtPos`,
+both plain `setBlock` calls with neighbour-update flags). This is real, mod-agnostic evidence of
+an actual transfer, usable for a source state too -- not an API Flowing Fluids has to expose on
+purpose, and not an assumption about what a `FluidState` represents.
+
+Bounded by design, per the ticket's "no persistent blocks, no forced chunk loads" requirement:
+a hard-capped (4096 entries, oldest evicted first), time-windowed (40 ticks) map populated purely
+by reacting to notifications the game already sends for other reasons -- never anything this mod
+registers, places, or schedules itself. This is also why it is not built on Flowing Fluids' own
+`IFFFlowListener`/`FFFlowListenerLevel` push-notification API (the mechanism Create's water wheel
+uses): that API requires a persistent registered `BlockEntity` at a known position to receive
+callbacks, which this mod has none of and would have to add purely to ask "did flow just happen
+here."
+
+Test evidence: `stationarySettledPartialWaterReportsNoErosionAmount` /
+`anAdvancingPartialWaterReportsAPositiveErosionAmount` construct the geometric cases
+deterministically with hand-placed states; `aSourceCellThatJustChangedErodesThenStopsAfterTheRecentWindow`
+proves a source cell that was just genuinely changed (a real block replacement, not a call into
+`RecentFlowActivity`'s own internals) erodes despite `isSource()==true`, then reverts to the
+ordinary no-op once nothing has touched it again past the window; and
+`realFlowingWaterAdvancesAndErodesWhatItTouches` places a genuine water source on open ground and
+lets the server's *own* scheduled fluid ticks run for real (the real vanilla engine, or the real
+Flowing Fluids engine when that mod is coinstalled) before checking the production decision
+against whatever state that real simulation actually produced -- not just a hand-constructed one.
 
 Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
 1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real

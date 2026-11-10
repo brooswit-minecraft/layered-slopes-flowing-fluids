@@ -32,6 +32,7 @@ public class LayeredSlopesFlowingFluidsMod {
         modContainer.registerConfig(ModConfig.Type.SERVER, FlowingFluidsConfig.SPEC);
         registerMaterials();
         NeoForge.EVENT_BUS.addListener(FlowingFluidErosion::onServerTick);
+        NeoForge.EVENT_BUS.addListener(RecentFlowActivity::onNeighborNotify);
         LOGGER.info("Layered Slopes Flowing Fluids loaded");
     }
 

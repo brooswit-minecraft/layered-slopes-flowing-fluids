@@ -128,7 +128,12 @@ public final class FlowingFluidErosionGameTests {
     @GameTest(template = "flat_platform")
     public static void stationarySourceWaterReportsNoErosionAmount(GameTestHelper helper) {
         helper.setBlock(POS, Blocks.STONE.defaultBlockState());
-        helper.setBlock(POS.relative(Direction.EAST), Blocks.WATER.defaultBlockState()); // source: LEVEL defaults to 0
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, Blocks.WATER.defaultBlockState()); // source: LEVEL defaults to 0
+        // This test's OWN placement above is itself a genuine change RecentFlowActivity would
+        // otherwise (correctly) treat as "just happened" -- age it out so this test establishes a
+        // deliberately long-standing/static baseline rather than a just-placed one.
+        RecentFlowActivity.forgetForTesting(helper.getLevel(), helper.absolutePos(contact));
 
         double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
         helper.assertTrue(amount == 0, "still source water must never report an erosion amount, got " + amount);
@@ -155,6 +160,8 @@ public final class FlowingFluidErosionGameTests {
         helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
         helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
         helper.setBlock(contact.below(), Blocks.STONE.defaultBlockState());
+        // Age out this fixture's own placement (see stationarySourceWaterReportsNoErosionAmount).
+        RecentFlowActivity.forgetForTesting(helper.getLevel(), helper.absolutePos(contact));
 
         double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
         helper.assertTrue(amount == 0, "a fully equalized, non-advancing flowing-type pool must never report an erosion amount, got " + amount);
@@ -206,6 +213,40 @@ public final class FlowingFluidErosionGameTests {
         helper.assertTrue(amount == FluidMath.FLOWING,
                 "a full non-source falling column must report the maximum erosion amount regardless of neighbours, got " + amount);
         helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53037: the optional Flowing Fluids mod represents EVERY full
+     * cell as a source state, including one its own finite simulation is actively feeding or
+     * draining -- {@code isSource()} alone cannot tell that apart from a permanently static
+     * ocean or lake. {@link RecentFlowActivity} is real, mod-agnostic evidence instead: a source
+     * cell that was just genuinely changed (a real block update, firing a real
+     * {@code BlockEvent.NeighborNotifyEvent} -- not a call into {@code RecentFlowActivity}'s own
+     * internals) must erode despite {@code isSource()==true}; the SAME cell, once nothing has
+     * touched it again for longer than the recent window, must revert to the ordinary
+     * static-source no-op.
+     */
+    @GameTest(template = "flat_platform", timeoutTicks = 100)
+    public static void aSourceCellThatJustChangedErodesThenStopsAfterTheRecentWindow(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        // A genuine replacement (air -> source), not a call into RecentFlowActivity's own
+        // internals: this is the real BlockEvent.NeighborNotifyEvent Flowing Fluids' own
+        // setFluidStateAtPosToNewAmount/removeAllFluidAtPos fire every time they actually move
+        // fluid, confirmed by decompiling the pinned jar.
+        helper.setBlock(contact, Blocks.AIR.defaultBlockState());
+        helper.setBlock(contact, Blocks.WATER.defaultBlockState());
+
+        double justChanged = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(justChanged > 0,
+                "a source cell that just genuinely changed must report a positive erosion amount despite isSource()==true, got " + justChanged);
+
+        helper.runAfterDelay(45, () -> {
+            double afterSettling = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+            helper.assertTrue(afterSettling == 0,
+                    "a source cell untouched for longer than the recent window must revert to the ordinary static-source no-op, got " + afterSettling);
+            helper.succeed();
+        });
     }
 
     /**

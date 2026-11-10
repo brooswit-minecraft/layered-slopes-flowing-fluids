@@ -22,18 +22,18 @@ import java.util.Set;
  *
  * <p>Eligibility is by the vanilla {@link FluidTags#WATER} tag, not a hardcoded fluid list, so
  * compatible modded water-like fluids erode too without code changes here; lava/heat erosion is
- * explicitly out of this ticket's scope (Dynamic Terrain's own heat erosion owns that). Only
- * flowing (non-source) contact counts -- see {@link FluidMath#amount}; still source water next
- * to a block is a no-op, distinguishing actively flowing fluid from static contact per the
- * ticket. {@link #isAdvancing} narrows "flowing" further to "has an actual neighbour it could
- * still spread into right now" -- a stationary, locally-equalized flowing-type pool no-ops just
- * like a source does, distinct from an edge still genuinely advancing downhill. This applies
- * identically to vanilla and to the optional Flowing Fluids mod, which can let a partial-amount
- * cell settle into exactly such a stationary pool (self-review 53031/53033): the eligibility
- * condition mirrors Flowing Fluids' own decompiled {@code canFitIntoFluid} (a horizontal
- * neighbour must be empty or strictly lower-amount same fluid; a downward neighbour must be
- * empty or same fluid below full), which is also vanilla's own spread precondition -- not a
- * Flowing-Fluids-specific signal, a shared physical one.
+ * explicitly out of this ticket's scope (Dynamic Terrain's own heat erosion owns that). A
+ * contact's amount comes from {@link #contactAmount}: ordinarily, flowing (non-source) contact
+ * only counts if it is genuinely {@link #isAdvancing} -- has an actual neighbour it could still
+ * spread into right now -- so a stationary, locally-equalized flowing-type pool no-ops just like
+ * a source does, distinct from an edge still advancing downhill (mirrors Flowing Fluids' own
+ * decompiled {@code canFitIntoFluid} precondition, also vanilla's own, not Flowing-Fluids-
+ * specific). But a source contact also counts, independent of that geometric check, if
+ * {@link RecentFlowActivity} recorded it as having actually just changed: the optional Flowing
+ * Fluids mod represents EVERY full cell as a source state, including one its own finite
+ * simulation is actively feeding or draining (self-review 53037), so {@code isSource()} alone
+ * cannot tell a genuinely still-transferring full cell apart from a permanently static ocean or
+ * lake under that mod -- real, mod-agnostic change evidence can.
  *
  * <p>Sampling random positions once per second, rather than hooking fluid-flow update events, is
  * most of what keeps one flow from multiplying erosion through repeated hooks -- but that alone
@@ -113,12 +113,32 @@ public final class FlowingFluidErosion {
                 continue;
             }
             BlockPos contactPos = pos.relative(direction);
+            if (!level.isLoaded(contactPos)) {
+                continue;
+            }
             FluidState fluid = level.getFluidState(contactPos);
-            if (!fluid.isEmpty() && fluid.is(FluidTags.WATER) && (fluid.isSource() || isAdvancing(level, contactPos, fluid))) {
-                strongest = Math.max(strongest, FluidMath.amount(fluid.isSource(), fluid.getAmount()));
+            if (!fluid.isEmpty() && fluid.is(FluidTags.WATER)) {
+                strongest = Math.max(strongest, contactAmount(level, contactPos, fluid));
             }
         }
         return strongest;
+    }
+
+    /**
+     * The erosion amount a single fluid contact contributes. A source contact is ordinarily
+     * non-erosive, but counts at the maximum amount if {@link RecentFlowActivity} recorded it as
+     * having genuinely just changed -- real, mod-agnostic evidence of an active transfer that a
+     * bare {@code isSource()} check cannot provide once the optional Flowing Fluids mod is
+     * involved (see the class doc). A non-source contact counts only if it is {@link #isAdvancing}.
+     */
+    static double contactAmount(ServerLevel level, BlockPos contactPos, FluidState fluid) {
+        if (RecentFlowActivity.recentlyChanged(level, contactPos)) {
+            return FluidMath.FLOWING;
+        }
+        if (fluid.isSource()) {
+            return 0;
+        }
+        return isAdvancing(level, contactPos, fluid) ? FluidMath.amount(false, fluid.getAmount()) : 0;
     }
 
     /**
@@ -143,6 +163,9 @@ public final class FlowingFluidErosion {
                 continue;
             }
             BlockPos neighborPos = fluidPos.relative(direction);
+            if (!level.isLoaded(neighborPos)) {
+                continue;
+            }
             // A solid block's FluidState is ALSO isEmpty() (no fluid there is not the same as "open
             // to flow into"): an ordinary air check on the BLOCK, not the fluid, is what actually
             // distinguishes "open" from "solid and blocking" (self-review 53036's finding).
