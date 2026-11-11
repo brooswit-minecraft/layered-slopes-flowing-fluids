@@ -740,41 +740,40 @@ public final class FlowingFluidErosionGameTests {
     }
 
     /**
-     * MINECRAFT-514: proves the real wiring, not just the pure logic {@link
-     * PerWorldLegacyMigrationTest} already covers end-to-end against plain temp directories --
+     * MINECRAFT-514 self-review (comment 53158): an earlier version of this test relied on a
+     * diagnostic file {@code apply} wrote on every call, including this exact no-legacy/no-override
+     * branch -- itself a real production side effect on the one path required to leave a fresh
+     * world's own config completely untouched, now removed entirely. This GameTest fixture's own
+     * world genuinely has no per-world {@code dynamicterrain-server.toml} (confirmed: only {@code
+     * readme.txt} exists under {@code run/world/serverconfig} before any server start), and
      * {@code ServerAboutToStartEvent} fires before any GameTest method runs (confirmed by the
-     * config-load log lines preceding "Preparing start region" in a real run), so by the time
-     * this test executes, this exact GameTestServer's own world save must already have been
-     * examined by the real listener reaching a real {@code MinecraftServer}'s own world save
-     * path, which a Path-only unit test cannot provide. This GameTest fixture's own world has no
-     * per-world {@code dynamicterrain-server.toml} (confirmed: only {@code readme.txt} exists
-     * under {@code run/world/serverconfig} before any server start), so the one observable,
-     * non-vacuous proof available in a single server lifecycle is the diagnostic line {@link
-     * PerWorldLegacyMigration#apply} leaves on EVERY run (never read back to decide anything,
-     * only written -- see its own doc) recording that exact "nothing to migrate" conclusion, plus
-     * the two live config values it left genuinely alone, matching the real NeoForge-loaded
-     * value for a world with no override file at all. A legacy-file-present path (the actually
-     * interesting "did it apply the right values" case) is exercised directly below by {@link
-     * #applyOnAFreshWorldWithAnExplicitOptOutSetsLiveConfigAndPersistsIt} and its siblings --
-     * same production {@code apply} method, same {@code FlowingFluidsConfig} fields, just a
+     * config-load log lines preceding "Preparing start region" in a real run) -- so by the time
+     * this test executes, the real listener has already examined this exact world via a real
+     * {@code MinecraftServer}, which a Path-only unit test cannot exercise. What remains provable
+     * without any artifact of its own: this world's {@code serverconfig} directory holds nothing
+     * beyond NeoForge's own stock {@code readme.txt} -- no override, and nothing else -- proving
+     * the real hook made zero filesystem writes for this legacy-free world. A legacy-file-present
+     * path (the actually interesting "did it apply the right values" case, and the
+     * already-configured "must remain untouched" case) is exercised directly below by {@link
+     * #applyOnAFreshWorldWithAnExplicitOptOutSetsLiveConfigAndPersistsIt} and its siblings -- same
+     * production {@code apply} method, same {@code FlowingFluidsConfig} fields, just a
      * hand-created temp directory rather than this test's own real world save (so each variant
      * can set up its own fixture independently without racing the real, already-fired hook).
      */
     @GameTest(template = "flat_platform")
-    public static void theServerAboutToStartMigrationHookActuallyRanForThisRealServer(GameTestHelper helper) {
+    public static void theServerAboutToStartMigrationHookMakesNoFilesystemWriteForThisRealLegacyFreeWorld(GameTestHelper helper) {
         var level = (ServerLevel) helper.getLevel();
         Path worldServerConfigDir = level.getServer().getWorldPath(LevelResource.ROOT).resolve("serverconfig");
-        String diagnostic;
-        try {
-            diagnostic = Files.readString(worldServerConfigDir.resolve(PerWorldLegacyMigration.DIAGNOSTIC_FILE_NAME));
+        java.util.List<String> entries;
+        try (var stream = Files.list(worldServerConfigDir)) {
+            entries = stream.map(p -> p.getFileName().toString()).sorted().collect(java.util.stream.Collectors.toList());
         } catch (java.io.IOException e) {
-            helper.fail("PerWorldLegacyMigration.onServerAboutToStart must have already run and left a diagnostic for this real server's own world save: " + e);
+            helper.fail("could not list this real server's own world serverconfig directory: " + e);
             return;
         }
-        helper.assertTrue(diagnostic.contains("no-op: no per-world legacy file"),
-                "this GameTest world has no per-world legacy file, so the real hook must have concluded there is nothing to migrate, got: " + diagnostic);
-        helper.assertTrue(!PerWorldLegacyMigration.alreadyConfigured(worldServerConfigDir),
-                "with nothing to migrate, the real hook must never have written a per-world override file");
+        helper.assertTrue(entries.equals(java.util.List.of("readme.txt")),
+                "the real hook must make zero filesystem writes for a world with no per-world legacy file -- "
+                        + "expected only NeoForge's own readme.txt, got: " + entries);
         helper.succeed();
     }
 

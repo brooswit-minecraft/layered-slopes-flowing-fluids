@@ -63,15 +63,6 @@ import java.nio.file.Path;
 final class PerWorldLegacyMigration {
     static final String LEGACY_FILE_NAME = "dynamicterrain-server.toml";
     static final String OVERRIDE_FILE_NAME = LayeredSlopesFlowingFluidsMod.MODID + "-server.toml";
-    /**
-     * Purely observational: {@link #apply} overwrites this with a one-line summary of what it
-     * decided on EVERY call, regardless of outcome. Never read by {@link #apply}/{@link #decide}
-     * themselves -- {@link #alreadyConfigured} is the only behavioral gate -- this exists solely
-     * so a test (namely the real-server GameTest, which cannot otherwise observe a "no legacy
-     * file, nothing to do" outcome non-vacuously) can confirm the real event listener actually
-     * ran and see what it concluded.
-     */
-    static final String DIAGNOSTIC_FILE_NAME = LayeredSlopesFlowingFluidsMod.MODID + "-migration-diagnostic.txt";
 
     private PerWorldLegacyMigration() {}
 
@@ -84,15 +75,18 @@ final class PerWorldLegacyMigration {
      * server start for the same world: once this world's own override file exists (whether
      * written by this method or anyone/anything else), every later call is a pure no-op --
      * {@link #alreadyConfigured} is checked FIRST, before any legacy read or live {@code .set()}.
+     * A fresh world with no per-world legacy file either makes NO live {@code .set()} call and NO
+     * filesystem write at all (self-review, MINECRAFT-514 comment 53158: an earlier design wrote
+     * a diagnostic-only file on every call, including this no-op branch and the already-configured
+     * branch -- a production side effect on exactly the paths required to leave a world's own
+     * config completely untouched).
      */
     static void apply(Path worldServerConfigDir) {
         if (alreadyConfigured(worldServerConfigDir)) {
-            recordDiagnostic(worldServerConfigDir, "skipped: override file already present");
             return;
         }
         Override override = decide(worldServerConfigDir);
         if (override == null) {
-            recordDiagnostic(worldServerConfigDir, "no-op: no per-world legacy file, nothing world-specific to migrate");
             return;
         }
         FlowingFluidsConfig.EROSION_ENABLED.set(override.erosionEnabled());
@@ -114,17 +108,6 @@ final class PerWorldLegacyMigration {
             // wrong decision or a lost admin edit.
             LayeredSlopesFlowingFluidsMod.LOGGER.warn(
                     "MINECRAFT-514 per-world legacy config migration could not write to {}", worldServerConfigDir, e);
-        }
-        recordDiagnostic(worldServerConfigDir,
-                "migrated: erosionEnabled=" + override.erosionEnabled() + " samplesPerSecond=" + override.samplesPerSecond());
-    }
-
-    private static void recordDiagnostic(Path worldServerConfigDir, String outcome) {
-        try {
-            Files.createDirectories(worldServerConfigDir);
-            Files.writeString(worldServerConfigDir.resolve(DIAGNOSTIC_FILE_NAME), "PerWorldLegacyMigration.apply: " + outcome + "\n");
-        } catch (IOException e) {
-            // Purely observational -- never gates behavior, so a failure here changes nothing.
         }
     }
 
