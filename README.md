@@ -95,15 +95,37 @@ of WHO changed it.
 Both gaps close the same way, via `FlowingFluidsCompat` (the only door to Flowing Fluids' real
 classes, compileOnly like `AtmosphereCompat` in dynamic-vehicles): `isCurrentlyTicking()` reads
 Flowing Fluids' own public `FlowingFluids.isManeuveringFluids` flag (confirmed by decompiling the
-pinned jar), which is `true` for the entire duration of its real fluid-moving tick method and
-`false` everywhere else, including during any manual `Level.setBlock` call. `isGoverning(fluid)`
-reads its own `FFConfig.enableMod`/`isFluidAllowed(fluid)` (its `ff$tickMixin` only cancels and
-replaces vanilla's tick when both are true -- vanilla's own tick runs otherwise, which is why
-gating on this is not redundant busywork: a disabled mod or an ignored fluid must fall back to
-the plain vanilla rule, not Flowing Fluids' representation of it). `RecentFlowActivity` only
-records a position when BOTH are true at the moment of the notification -- real, verified
-evidence of an actual Flowing Fluids transfer, never a manual edit, with or without an
-amount/source-ness change.
+pinned jar), which is `true` for the duration of its real fluid-moving tick method and its
+displacement path, and `false` everywhere else, including during any manual `Level.setBlock`
+call. `isGoverning(fluid)` reads its own `FFConfig.enableMod`/`isFluidAllowed(fluid)` (its
+`ff$tickMixin` only cancels and replaces vanilla's tick when both are true -- vanilla's own tick
+runs otherwise, which is why gating on this is not redundant busywork: a disabled mod or an
+ignored fluid must fall back to the plain vanilla rule, not Flowing Fluids' representation of
+it). `RecentFlowActivity` only records a position when BOTH are true at the moment of the
+notification -- real, verified evidence of an actual Flowing Fluids transfer, never a manual
+edit, with or without an amount/source-ness change.
+
+Review 53094 found, with bytecode-level evidence, that `isManeuveringFluids` is NOT set during
+Flowing Fluids' periodic random-leveling smoothing tick (active by default) -- a real transfer
+path `isCurrentlyTicking()` was therefore missing entirely. That path calls the exact same
+low-level setter (`FFFluidUtils.setFluidStateAtPosToNewAmount`) every other fluid-moving path
+ultimately calls, so `LevelingMixin` (`mixin` sub-package; Mixin's own "owned package"
+declaration in `layeredslopesflowingfluids.mixins.json` cannot coexist with this mod's ordinary
+classes, confirmed locally by a startup crash before moving it there) brackets exactly that one
+method with its own reentrancy counter, covering every path at its single lowest common point --
+no vanilla or NeoForge event fires around a fluid's random tick to hook instead, the usual
+plain-event approach this project otherwise uses throughout. `@Pseudo` (targeting by class
+reference, since this mod already has a compileOnly dependency on the pinned jar) is exactly the
+pattern Flowing Fluids itself uses for its own optional Create-compatibility mixins (confirmed by
+decompiling `MixinHosePulley` et al.): Mixin silently skips applying it at all when the target
+class cannot be found, which is the case for the entire standalone build and runtime -- no
+crash, no dependency, nothing on the runtime classpath, matching every other door into Flowing
+Fluids this project uses (confirmed locally: the standalone GameTest server starts and runs
+cleanly with the mixin configured, and the coinstalled one logs it actually applying to
+`traben.flowing_fluids.FFFluidUtils`). A counter, not a boolean, because nested calls (a
+leveling transfer calling the setter twice, inside a scheduled tick that may already be inside
+it once) must not have an inner call's completion incorrectly clear the signal while an outer
+call is still in progress.
 
 Bounded by design, per the ticket's "no persistent blocks, no forced chunk loads" requirement:
 a hard-capped (4096 entries, oldest evicted first), time-windowed (40 ticks) map populated purely
@@ -158,6 +180,13 @@ test's own Flowing Fluids physics running concurrently in the same batch. And
 `aManualReplaceAfterARealTransferImmediatelyClearsTheStaleRecord` lets a real transfer verify a
 confined position, then manually replaces it and asserts `recentlyChanged` reads false on the
 very next check -- proving the stale record is discarded immediately, not merely left to age out.
+`aRandomLevelingTransferIsVerifiedByRecentFlowActivity` walls off every direction except one
+between two different-amount cells and calls the genuine public `FluidState.randomTick` directly
+(retrying up to a generous bound against the one remaining real randomness -- Flowing Fluids' own
+choice of scan direction -- rather than waiting on vanilla's probabilistic per-chunk scheduler)
+until a real random-leveling transfer happens, then asserts `RecentFlowActivity` verifies it --
+proving `LevelingMixin` actually closes the gap review 53094 found, not merely that the idea
+should work.
 
 Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
 1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real

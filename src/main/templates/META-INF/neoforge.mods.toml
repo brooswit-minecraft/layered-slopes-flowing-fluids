@@ -33,3 +33,10 @@ description='''Flowing fluid passing over or beside a layered/layerable block ha
     versionRange="[${layeredslopes_version},)"
     ordering="AFTER"
     side="BOTH"
+
+# Targets the optional Flowing Fluids mod's own internal fluid-amount setter (@Pseudo, see
+# LevelingMixin) so RecentFlowActivity can verify its periodic random-leveling transfers too, not
+# just its main scheduled tick -- silently skipped by Mixin whenever that class cannot be found,
+# exactly as when Flowing Fluids itself is not installed.
+[[mixins]]
+config="${mod_id}.mixins.json"

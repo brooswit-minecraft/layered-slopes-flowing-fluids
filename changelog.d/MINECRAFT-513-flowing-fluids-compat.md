@@ -32,3 +32,9 @@ bump: minor
 - Added regression coverage for Flowing Fluids disabled/ignoring water (falls back to the plain
   vanilla rule, verified by directly toggling its own config), and for a manual replacement
   immediately discarding a stale `RecentFlowActivity` record rather than letting it age out.
+- Flowing Fluids' `isManeuveringFluids` flag turned out not to be set during its own periodic
+  random-leveling smoothing tick (active by default), a real transfer path that was therefore
+  going undetected. Added a narrowly-targeted, optional (`@Pseudo`, skipped entirely when Flowing
+  Fluids is absent) mixin on its own low-level fluid-amount setter -- the one point every one of
+  its transfer paths, including this one, ultimately goes through -- closing the gap at its root
+  rather than patching around it.

@@ -12,17 +12,34 @@ import net.neoforged.fml.ModList;
  * governing this fluid right now" (in which case vanilla's own tick runs regardless, per
  * {@code MixinFlowingFluid.ff$tickMixin}'s {@code ci.cancel()} being conditional on exactly that).
  *
- * <p>{@link #isCurrentlyTicking()} answers the real question directly: Flowing Fluids' own public
+ * <p>{@link #isCurrentlyTicking()} answers the real question directly. Flowing Fluids' own public
  * {@code FlowingFluids.isManeuveringFluids} flag (confirmed by decompiling the pinned jar) is
- * {@code true} for the entire duration of its {@code ff$tickMixin} fluid-tick method -- the one
- * and only place its mixin actually moves fluid -- and {@code false} the rest of the time,
- * including during any manual {@code Level.setBlock} call (a GameTest fixture, a player, another
- * mod) that happens to touch a fluid-bearing position. A notification observed while this is
- * {@code true} is therefore real, verified evidence of Flowing Fluids' own engine moving fluid,
- * not a guess from comparing amounts.
+ * {@code true} for the duration of its {@code ff$tickMixin} fluid-tick method and its
+ * displacement path, and {@code false} the rest of the time, including during any manual {@code
+ * Level.setBlock} call (a GameTest fixture, a player, another mod) that happens to touch a
+ * fluid-bearing position. Self-review 53094 found, with bytecode-level evidence, that this flag
+ * is NOT set during its periodic random-leveling smoothing tick ({@code
+ * MixinFlowingFluid.randomTick}, active by default): that path calls the SAME low-level setter
+ * ({@code FFFluidUtils.setFluidStateAtPosToNewAmount}) every other fluid-moving path ultimately
+ * goes through, so {@link LevelingMixin} brackets exactly that one method with its own
+ * {@link #levelingDepth} reentrancy counter instead of relying on Flowing Fluids' own flag --
+ * covering every path, including this one, at its single lowest common point, in a dedicated
+ * narrowly-targeted (one method), optional (`@Pseudo`, skipped entirely if Flowing Fluids is
+ * absent, exactly the pattern Flowing Fluids itself uses for its own optional Create compat)
+ * mixin rather than the usual plain-event approach this project otherwise uses throughout,
+ * because no vanilla or NeoForge event fires around a fluid's random tick to hook instead. A
+ * counter, not a boolean, because nested calls (a leveling transfer calling the setter twice,
+ * inside a scheduled tick that may already be inside it once) must not have an inner call's
+ * completion incorrectly clear the signal while an outer call is still in progress.
  */
-final class FlowingFluidsCompat {
+public final class FlowingFluidsCompat {
     private static Boolean present;
+    /**
+     * Reentrancy counter set by {@code io.github.brooswitminecraft.layeredslopesflowingfluids.mixin.LevelingMixin}
+     * (a different package than this class, so this must be public -- see that class's own doc
+     * comment for why it cannot live alongside this class); see the class doc above.
+     */
+    public static int levelingDepth = 0;
 
     private FlowingFluidsCompat() {}
 
@@ -40,7 +57,7 @@ final class FlowingFluidsCompat {
 
     /** Whether a currently-running call stack is inside Flowing Fluids' own fluid-moving tick. */
     static boolean isCurrentlyTicking() {
-        return isLoaded() && Bridge.isCurrentlyTicking();
+        return isLoaded() && (Bridge.isCurrentlyTicking() || levelingDepth > 0);
     }
 
     /**

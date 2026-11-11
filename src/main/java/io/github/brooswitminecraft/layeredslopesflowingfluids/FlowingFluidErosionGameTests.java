@@ -484,6 +484,62 @@ public final class FlowingFluidErosionGameTests {
     }
 
     /**
+     * MINECRAFT-513 self-review 53094: Flowing Fluids' own {@code isManeuveringFluids} flag is
+     * NOT set during its periodic random-leveling smoothing tick (confirmed by decompiling the
+     * pinned jar's bytecode -- two real {@code setFluidStateAtPosToNewAmount} calls, no flag
+     * access anywhere in that method), active by default. {@code LevelingMixin} closes that gap
+     * at the one low-level setter every Flowing Fluids transfer path ultimately calls, instead of
+     * that flag. {@code FluidState.randomTick} is called directly (a genuine public vanilla
+     * method, not a synthetic shortcut) rather than waiting on vanilla's own probabilistic
+     * per-chunk random-tick scheduler, which would make this nondeterministic; the direction
+     * Flowing Fluids' own leveling scan picks is still genuinely random, so this retries up to a
+     * generous bound -- with every other direction walled off, only the one real transfer this
+     * test cares about can ever succeed, so a retry is exactly as deterministic as the single-shot
+     * fixtures elsewhere in this class. A no-op pass-through whenever Flowing Fluids is not
+     * governing water, where vanilla's own {@code randomTick} has no leveling behavior to trigger
+     * at all.
+     */
+    @GameTest(template = "fluid_flow_platform")
+    public static void aRandomLevelingTransferIsVerifiedByRecentFlowActivity(GameTestHelper helper) {
+        if (!FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState())) {
+            helper.succeed();
+            return;
+        }
+        BlockPos high = new BlockPos(1, 2, 1);
+        BlockPos low = new BlockPos(2, 2, 1);
+        // Wall off every direction except the one straight line from "high" to "low": the only
+        // path Flowing Fluids' own random-direction leveling scan can ever actually find water
+        // through, regardless of which direction it happens to pick this attempt.
+        helper.setBlock(high.north(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(high.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(high.above(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(low.north(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(low.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(low.above(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(low.east(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(high, flowingWater(2)); // amount 6
+        helper.setBlock(low, flowingWater(6)); // amount 2
+        var level = (ServerLevel) helper.getLevel();
+        var absoluteHigh = helper.absolutePos(high);
+        var absoluteLow = helper.absolutePos(low);
+        int lowAmountBefore = level.getFluidState(absoluteLow).getAmount();
+
+        for (int attempt = 0; attempt < 500; attempt++) {
+            level.getFluidState(absoluteHigh).randomTick(level, absoluteHigh, level.getRandom());
+            if (level.getFluidState(absoluteLow).getAmount() != lowAmountBefore) {
+                helper.assertTrue(RecentFlowActivity.recentlyChanged(level, absoluteLow),
+                        "a real Flowing Fluids random-leveling transfer must be verified by RecentFlowActivity, "
+                                + "got low=" + level.getFluidState(absoluteLow));
+                helper.succeed();
+                return;
+            }
+        }
+        helper.fail("a random-leveling transfer between these two cells never happened in 500 attempts -- "
+                + "either Flowing Fluids' own leveling precondition is not met here, or something about this "
+                + "fixture needs revisiting");
+    }
+
+    /**
      * MINECRAFT-513 self-review 52887: two players with overlapping sample radii must not
      * double-attempt the exact same dimension+position in the same second. This exercises the
      * real production dedup primitive ({@code markVisited}) directly and deterministically --
