@@ -127,6 +127,19 @@ leveling transfer calling the setter twice, inside a scheduled tick that may alr
 it once) must not have an inner call's completion incorrectly clear the signal while an outer
 call is still in progress.
 
+Review 53101 found the mixin's `HEAD`/`RETURN` pair alone is not exception-safe: a thrown setter
+skips `RETURN`, permanently stuck positive, after which every later manual edit anywhere would
+misread as real movement -- confirmed locally that this actually happens (a deliberately induced
+leak really does make a manual edit misread as verified). Fixed with a bounded safety net, not a
+replacement for the pair (which still handles the overwhelming non-exceptional case, including
+nesting, exactly): `FlowingFluidsCompat.onServerTickStart` forces the counter back to `0` at the
+start of every single server tick, bounding any such leak to, at most, the remainder of the one
+tick it happened on, and a fresh server/world session (`onServerStarting`) starts clean rather
+than carrying over whatever a previous one left behind. Not `ThreadLocal`-scoped: Minecraft's own
+world mutation (and therefore this exact setter) only ever runs on the single server thread, the
+same assumption every other static field in this class and in `RecentFlowActivity` already
+relies on without extra synchronization.
+
 Bounded by design, per the ticket's "no persistent blocks, no forced chunk loads" requirement:
 a hard-capped (4096 entries, oldest evicted first), time-windowed (40 ticks) map populated purely
 by reacting to notifications the game already sends for other reasons. It also clears outright on
@@ -186,7 +199,13 @@ between two different-amount cells and calls the genuine public `FluidState.rand
 choice of scan direction -- rather than waiting on vanilla's probabilistic per-chunk scheduler)
 until a real random-leveling transfer happens, then asserts `RecentFlowActivity` verifies it --
 proving `LevelingMixin` actually closes the gap review 53094 found, not merely that the idea
-should work.
+should work. `aLeakedLevelingDepthIsBoundedByThePerTickSafetyNet` first induces exactly the leak
+review 53101 described and confirms it really does cause a manual edit to misread as verified
+(restored immediately after, not left stuck across a real tick boundary, since the counter is a
+single process-wide field and other GameTests run concurrently in the same batch), proving the
+vulnerability was real -- then separately induces a stuck value and confirms the per-tick safety
+net actually clears it by the very next tick, and that a manual edit made after that reset
+correctly reads as negative again.
 
 Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
 1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real

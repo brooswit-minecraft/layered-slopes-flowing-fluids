@@ -540,6 +540,57 @@ public final class FlowingFluidErosionGameTests {
     }
 
     /**
+     * MINECRAFT-513 self-review 53101: {@code LevelingMixin}'s {@code HEAD}/{@code RETURN} pair
+     * alone is not exception-safe -- a thrown setter would leave {@code levelingDepth} stuck
+     * positive forever, after which later manual edits would incorrectly qualify as real
+     * movement. Simulates exactly that leaked state directly (restored to zero immediately
+     * after the one manual edit it brackets, not left stuck across a real tick boundary, since
+     * {@code levelingDepth} is a single process-wide field and other GameTests run concurrently
+     * in the same batch) and confirms the edit still read as verified while artificially stuck --
+     * proving the leak WOULD have caused the exact false positive under review, before asserting
+     * the per-tick safety net ({@code FlowingFluidsCompat.onServerTickStart}) actually clears a
+     * separately-induced stuck value by the very next tick, and that a manual edit made after
+     * that reset correctly reads as negative again.
+     */
+    @GameTest(template = "flat_platform")
+    public static void aLeakedLevelingDepthIsBoundedByThePerTickSafetyNet(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        var level = (ServerLevel) helper.getLevel();
+        var absoluteContact = helper.absolutePos(contact);
+
+        // Phase 1: a leaked counter (simulating an exceptional exit skipping RETURN) really does
+        // cause a manual edit to misread as verified -- confirms the vulnerability review 53101
+        // described is real, not hypothetical, before proving it is bounded.
+        helper.setBlock(contact, flowingWater(4));
+        FlowingFluidsCompat.levelingDepth = 1;
+        helper.setBlock(contact, Blocks.WATER.defaultBlockState());
+        boolean misreadWhileLeaked = RecentFlowActivity.recentlyChanged(level, absoluteContact);
+        FlowingFluidsCompat.levelingDepth = 0;
+        if (FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState())) {
+            helper.assertTrue(misreadWhileLeaked,
+                    "a leaked positive levelingDepth must actually cause a manual edit to misread as verified "
+                            + "(demonstrating the vulnerability under review), before the safety net is checked");
+        }
+        RecentFlowActivity.forgetForTesting(level, absoluteContact);
+
+        // Phase 2: a separately-induced stuck value, left for the per-tick safety net to find
+        // rather than cleared immediately, must actually be cleared by the very next tick.
+        FlowingFluidsCompat.levelingDepth = 1;
+        helper.runAfterDelay(1, () -> {
+            helper.assertTrue(FlowingFluidsCompat.levelingDepth == 0,
+                    "a leaked positive levelingDepth must reset to 0 at the start of the next tick, got "
+                            + FlowingFluidsCompat.levelingDepth);
+            helper.setBlock(contact, Blocks.STONE.defaultBlockState());
+            helper.setBlock(contact, Blocks.WATER.defaultBlockState());
+            double amount = FlowingFluidErosion.strongestFlowAround(level, helper.absolutePos(POS));
+            helper.assertTrue(amount == 0,
+                    "once the leaked counter is reset, a manual edit must read as negative again, got " + amount);
+            helper.succeed();
+        });
+    }
+
+    /**
      * MINECRAFT-513 self-review 52887: two players with overlapping sample radii must not
      * double-attempt the exact same dimension+position in the same second. This exercises the
      * real production dedup primitive ({@code markVisited}) directly and deterministically --

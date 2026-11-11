@@ -31,6 +31,7 @@ class RuntimeEvidenceError(ValueError):
 # aDisabledFlowingFluidsNeverGovernsWater.../anIgnoredFluidIsNeverGoverned.../
 # aManualReplaceAfterARealTransferImmediatelyClearsTheStaleRecord.../
 # aRandomLevelingTransferIsVerifiedByRecentFlowActivity.../
+# aLeakedLevelingDepthIsBoundedByThePerTickSafetyNet.../
 # aPositionAlreadyVisitedThisSecond.../
 # chanceScaleZeroDisablesAnOtherwiseGuaranteedAttempt.../aResistedRoll.../
 # aCancelledProtectionHook.../erodingAFullGrassBlock.../
@@ -39,7 +40,7 @@ class RuntimeEvidenceError(ValueError):
 # not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: these tests
 # erode via whichever real engine's own physics is actually active, never by assuming which one;
 # see FlowingFluidErosionGameTests)
-EXPECTED_REQUIRED_TEST_COUNT = 21
+EXPECTED_REQUIRED_TEST_COUNT = 22
 
 
 def verify_runtime_log(log_text):

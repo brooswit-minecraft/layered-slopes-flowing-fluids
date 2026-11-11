@@ -37,4 +37,7 @@ bump: minor
   going undetected. Added a narrowly-targeted, optional (`@Pseudo`, skipped entirely when Flowing
   Fluids is absent) mixin on its own low-level fluid-amount setter -- the one point every one of
   its transfer paths, including this one, ultimately goes through -- closing the gap at its root
-  rather than patching around it.
+  rather than patching around it. That mixin's own HEAD/RETURN pair was not exception-safe (a
+  thrown setter would leave it permanently stuck positive); bounded with a per-tick safety net
+  that forces it back to zero at the start of every server tick, verified to actually clear a
+  deliberately leaked value and to actually cause the misread it guards against before it does.
