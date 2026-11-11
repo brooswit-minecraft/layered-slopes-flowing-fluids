@@ -15,8 +15,12 @@ import java.util.regex.Pattern;
  * is never rewritten or deleted by this migration, only read.
  */
 final class LegacyConfigMigration {
-    private static final Pattern EROSION_ENABLED = Pattern.compile("(?m)^\\s*erosionEnabled\\s*=\\s*(true|false)\\s*$");
-    private static final Pattern WATER_SAMPLES_PER_SECOND = Pattern.compile("(?m)^\\s*waterSamplesPerSecond\\s*=\\s*(\\d+)\\s*$");
+    // Both patterns tolerate an optional trailing "# ..." TOML comment after the value (valid
+    // TOML -- a comment runs to end of line) and must still extract the real value from it, not
+    // merely avoid throwing (coordinator review, MINECRAFT-514 comment 53149): a value followed
+    // by a comment is not the same thing as an absent value.
+    private static final Pattern EROSION_ENABLED = Pattern.compile("(?m)^\\s*erosionEnabled\\s*=\\s*(true|false)\\s*(#.*)?$");
+    private static final Pattern WATER_SAMPLES_PER_SECOND = Pattern.compile("(?m)^\\s*waterSamplesPerSecond\\s*=\\s*(\\d+)\\s*(#.*)?$");
 
     private LegacyConfigMigration() {}
 
@@ -32,7 +36,8 @@ final class LegacyConfigMigration {
 
     /**
      * @return Dynamic Terrain's legacy {@code waterSamplesPerSecond}, or {@code null} if the file
-     *     is missing, unreadable, doesn't set the key, or sets it to a value too large for an
+     *     is missing, unreadable, doesn't set the key (a trailing {@code # comment} is tolerated
+     *     and does not count as "doesn't set"), or sets it to a value too large for an
      *     {@code int} -- {@code \d+} matches digit runs of any length, and this is read from
      *     {@link FlowingFluidsConfig}'s static initializer, so a value like
      *     {@code 99999999999999} must fall back to {@code null} rather than throw

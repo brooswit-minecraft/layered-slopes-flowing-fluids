@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.layeredslopesflowingfluids;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -12,11 +13,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Pure-decision and on-disk-mechanism coverage for {@link PerWorldLegacyMigration}, independent
- * of any live NeoForge server -- {@link #decide} only ever touches the files it is handed, the
- * same {@code @TempDir}-per-world pattern {@link LegacyConfigMigrationTest} already uses. Live
- * wiring ({@link PerWorldLegacyMigration#onServerAboutToStart}) is covered separately by a
- * GameTest, since it needs a real {@code MinecraftServer}.
+ * Pure, Minecraft/NeoForge-free coverage of {@link PerWorldLegacyMigration}'s decision logic and
+ * on-disk mechanism -- {@code decide}/{@code alreadyConfigured}/{@code writeOverrideFile} only
+ * ever touch the {@code Path}s they are handed, the same {@code @TempDir}-per-world pattern
+ * {@link LegacyConfigMigrationTest} already uses. {@link PerWorldLegacyMigration#apply} itself
+ * reads/writes {@link FlowingFluidsConfig}'s live {@code ModConfigSpec} fields, which require the
+ * NeoForge/Minecraft classpath this plain unit-test source set does not have (same reason
+ * {@code FlowingFluidErosionGameTests} lives under {@code src/main}, not {@code src/test}) --
+ * {@code apply}'s full end-to-end behavior (live values, byte-for-byte preservation of an
+ * existing override, idempotent repeat runs, two-world isolation) is covered there instead.
  */
 class PerWorldLegacyMigrationTest {
     @Test
@@ -45,7 +50,29 @@ class PerWorldLegacyMigrationTest {
                 "erosionEnabled = true\nwaterSamplesPerSecond = 300\n");
         PerWorldLegacyMigration.Override override = PerWorldLegacyMigration.decide(worldServerConfigDir);
         assertTrue(override.erosionEnabled());
-        assertTrue(override.samplesPerSecond() == 300);
+        assertEquals(300, override.samplesPerSecond());
+    }
+
+    @Test
+    void anInlineCommentOnTheLegacyValueIsHonoredRatherThanTreatedAsAbsent(@TempDir Path worldServerConfigDir) throws IOException {
+        // MINECRAFT-514 coordinator review (comment 53149): a trailing TOML comment is a valid
+        // value, not an invalid one -- decide() must resolve the REAL legacy choice from it.
+        Files.writeString(worldServerConfigDir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                "erosionEnabled = true # explicit per-world choice\nwaterSamplesPerSecond = 64 # tuned\n");
+        PerWorldLegacyMigration.Override override = PerWorldLegacyMigration.decide(worldServerConfigDir);
+        assertTrue(override.erosionEnabled());
+        assertEquals(64, override.samplesPerSecond());
+    }
+
+    @Test
+    void outOfRangeNumericLegacyInputDecidesWithoutThrowing(@TempDir Path worldServerConfigDir) throws IOException {
+        Files.writeString(worldServerConfigDir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                "erosionEnabled = true\nwaterSamplesPerSecond = 99999999999999\n");
+        // The out-of-range number falls back to "never set" (see LegacyConfigMigrationTest);
+        // decide() must resolve the rest of the policy from that, never throw, regardless.
+        PerWorldLegacyMigration.Override override = PerWorldLegacyMigration.decide(worldServerConfigDir);
+        assertTrue(override.erosionEnabled());
+        assertEquals(128, override.samplesPerSecond());
     }
 
     @Test
@@ -61,35 +88,13 @@ class PerWorldLegacyMigrationTest {
     }
 
     @Test
-    void inlineCommentsAndInvalidNumericInputDecideWithoutThrowing(@TempDir Path worldServerConfigDir) throws IOException {
-        Files.writeString(worldServerConfigDir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
-                "erosionEnabled = true # explicit per-world choice\nwaterSamplesPerSecond = 99999999999999\n");
-        // The inline comment and the out-of-range number both fall back to "never set" (see
-        // LegacyConfigMigrationTest); decide() must resolve the rest of the policy from that,
-        // never throw, regardless.
-        PerWorldLegacyMigration.Override override = PerWorldLegacyMigration.decide(worldServerConfigDir);
-        assertFalse(override.erosionEnabled());
-        assertTrue(override.samplesPerSecond() == 128);
-    }
-
-    @Test
-    void applyIsFirstWriteOnlyAndNeverRepeatsOnceMarked(@TempDir Path worldServerConfigDir) throws IOException {
-        Files.writeString(worldServerConfigDir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
-                "erosionEnabled = false\nwaterSamplesPerSecond = 0\n");
-
-        assertFalse(PerWorldLegacyMigration.alreadyMigrated(worldServerConfigDir));
-        PerWorldLegacyMigration.markMigrated(worldServerConfigDir);
-        assertTrue(PerWorldLegacyMigration.alreadyMigrated(worldServerConfigDir));
-
-        // An admin edit made after the (already-run) migration must never be clobbered: decide()
-        // would still read the per-world legacy file, but alreadyMigrated() is what apply() uses
-        // to skip re-deciding/re-overwriting entirely on a later start -- proven by writeOverrideFile
-        // simply never being reached once the marker exists (exercised end-to-end by apply() via
-        // the GameTest-side wiring test; this test proves the marker gate itself).
-        Files.writeString(worldServerConfigDir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME),
-                "erosionEnabled = true\nsamplesPerSecond = 999\n");
-        String adminEdit = Files.readString(worldServerConfigDir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
-        assertTrue(adminEdit.contains("true"));
+    void alreadyConfiguredIsTrueOnlyWhenTheOverrideFileItselfExists(@TempDir Path worldServerConfigDir) throws IOException {
+        // MINECRAFT-514 coordinator review (comment 53149): this is the ONLY gate apply() uses
+        // before touching live config or legacy files -- deliberately no separate marker that
+        // could disagree with whether the file it is supposed to be guarding actually exists.
+        assertFalse(PerWorldLegacyMigration.alreadyConfigured(worldServerConfigDir));
+        Files.writeString(worldServerConfigDir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME), "erosionEnabled = true\n");
+        assertTrue(PerWorldLegacyMigration.alreadyConfigured(worldServerConfigDir));
     }
 
     @Test

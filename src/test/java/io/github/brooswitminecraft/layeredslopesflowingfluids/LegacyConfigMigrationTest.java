@@ -51,14 +51,22 @@ class LegacyConfigMigrationTest {
     }
 
     @Test
-    void anInlineTomlCommentAfterTheValueReadsAsNullRatherThanTheValue(@TempDir Path dir) throws IOException {
-        // Both patterns are anchored to end-of-line ((?m)...$): a trailing inline comment means
-        // neither regex matches at all, so this must fall back to null (this mod's own safe
-        // default-off policy), not misparse "true # comment" as true, and never throw.
+    void anInlineTomlCommentAfterTheValueStillReadsTheRealValue(@TempDir Path dir) throws IOException {
+        // MINECRAFT-514 coordinator review (comment 53149): a trailing "# ..." is a valid TOML
+        // comment, not an invalid value -- treating it as absent silently discarded a real
+        // explicit legacy choice. Both patterns now tolerate it and must still extract true/64.
         Path file = dir.resolve("dynamicterrain-server.toml");
         Files.writeString(file, "erosionEnabled = true # keep water erosion on\nwaterSamplesPerSecond = 64 # tuned down\n");
-        assertNull(LegacyConfigMigration.readLegacyErosionEnabled(file));
-        assertNull(LegacyConfigMigration.readLegacyWaterSamplesPerSecond(file));
+        assertEquals(Boolean.TRUE, LegacyConfigMigration.readLegacyErosionEnabled(file));
+        assertEquals(Integer.valueOf(64), LegacyConfigMigration.readLegacyWaterSamplesPerSecond(file));
+    }
+
+    @Test
+    void anInlineTomlCommentOnAFalseAndZeroValueStillReadsThem(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("dynamicterrain-server.toml");
+        Files.writeString(file, "erosionEnabled = false # explicitly off\nwaterSamplesPerSecond = 0 # disabled\n");
+        assertEquals(Boolean.FALSE, LegacyConfigMigration.readLegacyErosionEnabled(file));
+        assertEquals(Integer.valueOf(0), LegacyConfigMigration.readLegacyWaterSamplesPerSecond(file));
     }
 
     @Test

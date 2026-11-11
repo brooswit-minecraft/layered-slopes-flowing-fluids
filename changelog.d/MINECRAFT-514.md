@@ -9,10 +9,14 @@ bump: patch
   (or into) water erosion now wins over whatever the global legacy config says: the previous
   migration only ever read the single global `config/dynamicterrain-server.toml` once, at class
   load, so a world-specific legacy choice could be silently overridden by an unrelated global
-  default. New `PerWorldLegacyMigration`, run once per world (first-write-only, via a per-world
-  marker) on `ServerAboutToStartEvent`, persists the correct per-world choice into that world's
-  own `serverconfig/layeredslopesflowingfluids-server.toml` override. A fresh world with no
-  per-world legacy file at all is left completely untouched.
+  default. New `PerWorldLegacyMigration`, run on every `ServerAboutToStartEvent`, gates purely on
+  whether that world's own `serverconfig/layeredslopesflowingfluids-server.toml` override already
+  exists -- for any reason -- and leaves it (and live config) completely alone if so; only when
+  it's genuinely absent does it read that world's own legacy file and persist the correct choice.
+  A fresh world with no per-world legacy file at all is left completely untouched.
+- A valid inline TOML comment after `erosionEnabled`/`waterSamplesPerSecond` in a legacy config
+  (`erosionEnabled = true # comment`) is now actually parsed for its real value instead of being
+  silently treated as absent.
 - `LayerErosion.erode`'s public entrypoint now checks `level.isLoaded(pos)` itself, before any
   block/fluid state read, instead of relying entirely on its one existing caller
   (`FlowingFluidErosion.sampleAround`) to have pre-checked -- any other caller handing it an

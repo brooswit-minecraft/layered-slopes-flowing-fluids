@@ -42,9 +42,13 @@ class RuntimeEvidenceError(ValueError):
 # see FlowingFluidErosionGameTests)/
 # erodeOnAnUnloadedPositionReportsUnloadedWithoutForcingAChunkLoad.../
 # sampleAroundACenterFarOutsideLoadedTerrainNeverForcesAChunkLoad.../
-# theServerAboutToStartMigrationHookActuallyRanForThisRealServer... (MINECRAFT-514: unloaded-
-# neighbor sampling and per-world legacy migration hardening, also in FlowingFluidErosionGameTests)
-EXPECTED_REQUIRED_TEST_COUNT = 25
+# theServerAboutToStartMigrationHookActuallyRanForThisRealServer.../
+# applyOnAFreshWorldWithAnExplicitOptOutSetsLiveConfigAndPersistsIt.../
+# applyNeverTouchesAnAlreadyPresentOverrideFileOrItsLiveValuesEvenWithAConflictingLegacyFile.../
+# applyIsIdempotentOnARepeatRunForTheSameWorld.../
+# twoDistinctWorldsStayIsolatedThroughApply... (MINECRAFT-514: unloaded-neighbor sampling and
+# per-world legacy migration hardening, also in FlowingFluidErosionGameTests)
+EXPECTED_REQUIRED_TEST_COUNT = 29
 
 
 def verify_runtime_log(log_text):
