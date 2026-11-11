@@ -15,8 +15,7 @@ bump: patch
   it's genuinely absent does it read that world's own legacy file and persist the correct choice.
   A fresh world with no per-world legacy file at all is left completely untouched -- including no
   longer writing a diagnostic-only file an earlier draft of this migration wrote on every call. A
-  per-world
-  override this migration writes now also explicitly preserves the currently-effective
+  per-world override this migration writes now also explicitly preserves the currently-effective
   `chanceScale` (not just `erosionEnabled`/`samplesPerSecond`), so an admin's own customized
   global value survives into it instead of being silently reset to the spec default the next
   time NeoForge "corrects" that minimal file's formatting. The persisted override is now also
@@ -24,7 +23,12 @@ bump: patch
   path, never overwriting an existing one), and live config is only ever mutated AFTER that
   persist succeeds -- a disk/creation/interruption failure can no longer leave this run's live
   values changed with no matching durable record, which a later restart would otherwise silently
-  mistake for "nothing to migrate" and re-derive from the global default instead.
+  mistake for "nothing to migrate" and re-derive from the global default instead. That atomic
+  writer also now loops to fully drain its write buffer before syncing (a single `FileChannel`
+  write call is not guaranteed to consume it all), never misreports a successfully published
+  override as a failure merely because removing its now-redundant temp file afterward failed,
+  and treats an environment where hard links are unsupported as an ordinary persistence failure
+  rather than falling back to an overwrite.
 - A valid inline TOML comment after `erosionEnabled`/`waterSamplesPerSecond` in a legacy config
   (`erosionEnabled = true # comment`) is now actually parsed for its real value instead of being
   silently treated as absent.

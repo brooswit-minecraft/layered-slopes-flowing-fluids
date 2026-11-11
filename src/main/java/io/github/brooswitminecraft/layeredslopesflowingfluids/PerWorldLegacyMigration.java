@@ -172,9 +172,25 @@ final class PerWorldLegacyMigration {
      * own edit, or another run of this exact migration winning a race) -- and can never leave a
      * half-written final file behind on a disk/creation/interruption failure, since the only
      * write to the FINAL path is linking an already-complete, already-{@code fsync}'d temp file.
-     * The temp file is removed in every case (its data survives via the link on success). Throws
-     * on any failure -- including the already-exists race -- so the caller ({@link #apply}) can
-     * detect that nothing was durably persisted and must not treat this run's decision as applied.
+     *
+     * <p>Three correctness fixes from coordinator/self-review (MINECRAFT-514 comments 53163/
+     * 53164), each independently real: (1) {@code FileChannel.write(ByteBuffer)} is not
+     * guaranteed to consume the whole buffer in one call -- a short write followed directly by
+     * {@code force}/link could publish a truncated final file -- so the write loops on {@code
+     * buffer.hasRemaining()} until fully drained. (2) Final-path publication success is tracked
+     * SEPARATELY from temp-file cleanup: a {@code deleteIfExists} failure AFTER {@link
+     * Files#createLink} already succeeded is merely logged (the trusted override is already
+     * durably in place; a leftover temp file is harmless clutter), never reported to the caller
+     * as if persistence itself had failed -- which would wrongly skip the matching live mutation
+     * despite the override already being correctly published. (3) Hard-link support is
+     * filesystem/provider-dependent; {@link UnsupportedOperationException} from {@code
+     * createLink} is caught and treated exactly like any other persistence failure (no live
+     * mutation, nothing published) -- never a silent overwriting fallback, which would
+     * reintroduce the exact clobbering bug {@link #alreadyConfigured} exists to prevent.
+     *
+     * <p>Throws on any failure -- including the already-exists race and the two cases above --
+     * so the caller ({@link #apply}) can detect that nothing was durably persisted and must not
+     * treat this run's decision as applied.
      */
     static void writeOverrideFileAtomically(Path worldServerConfigDir, Override override, double chanceScale) throws IOException {
         Files.createDirectories(worldServerConfigDir);
@@ -183,15 +199,57 @@ final class PerWorldLegacyMigration {
                 + "samplesPerSecond = " + override.samplesPerSecond() + "\n"
                 + "chanceScale = " + chanceScale + "\n";
         Path tempFile = Files.createTempFile(worldServerConfigDir, OVERRIDE_FILE_NAME + ".", ".tmp");
+
+        boolean published = false;
+        IOException publishFailure = null;
         try {
+            ByteBuffer buffer = ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8));
             try (FileChannel channel = FileChannel.open(tempFile, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-                channel.write(ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
+                while (buffer.hasRemaining()) {
+                    channel.write(buffer);
+                }
                 channel.force(true);
             }
-            Files.createLink(finalFile, tempFile);
-        } finally {
-            Files.deleteIfExists(tempFile);
+            try {
+                Files.createLink(finalFile, tempFile);
+                published = true;
+            } catch (UnsupportedOperationException e) {
+                throw asPersistenceFailure(worldServerConfigDir, e);
+            }
+        } catch (IOException e) {
+            publishFailure = e;
         }
+
+        try {
+            Files.deleteIfExists(tempFile);
+        } catch (IOException cleanupFailure) {
+            if (published) {
+                LayeredSlopesFlowingFluidsMod.LOGGER.warn(
+                        "MINECRAFT-514 per-world legacy config migration published {} but could not remove its temp file {}",
+                        finalFile, tempFile, cleanupFailure);
+            } else if (publishFailure != null) {
+                publishFailure.addSuppressed(cleanupFailure);
+            } else {
+                throw cleanupFailure;
+            }
+        }
+
+        if (publishFailure != null) {
+            throw publishFailure;
+        }
+    }
+
+    /**
+     * Translates hard-link support being unavailable for {@code worldServerConfigDir} (a
+     * filesystem/provider property -- {@link Files#createLink} throws {@link
+     * UnsupportedOperationException} rather than {@link IOException} for it) into an ordinary
+     * persistence failure {@link #writeOverrideFileAtomically} can throw and {@link #apply} can
+     * treat exactly like any other failed persist -- no live mutation, nothing published.
+     * Extracted so this exact translation is independently testable without needing a real
+     * filesystem that genuinely lacks hard-link support.
+     */
+    static IOException asPersistenceFailure(Path worldServerConfigDir, UnsupportedOperationException cause) {
+        return new IOException("hard links are not supported for " + worldServerConfigDir, cause);
     }
 
     record Override(boolean erosionEnabled, int samplesPerSecond) {}

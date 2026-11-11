@@ -141,4 +141,19 @@ class PerWorldLegacyMigrationTest {
                     "no leftover temporary file may remain after a failed write");
         }
     }
+
+    @Test
+    void unsupportedHardLinksAreTranslatedIntoAnOrdinaryPersistenceFailure(@TempDir Path worldServerConfigDir) {
+        // MINECRAFT-514 coordinator review (comment 53163): hard-link support is
+        // filesystem/provider-dependent -- Files.createLink throws UnsupportedOperationException
+        // (not IOException) when unavailable. This exact translation is independently testable
+        // without a real filesystem that genuinely lacks hard-link support; the real createLink
+        // call site (writeOverrideFileAtomically) is covered by
+        // writeOverrideFileAtomicallyNeverReplacesAConcurrentlyAppearingFinalFile and the
+        // GameTest-level applyNeverMutatesLiveValuesWhenPersistenceFails for the general
+        // "persistence failed, treat it as an ordinary failure" contract this feeds into.
+        UnsupportedOperationException cause = new UnsupportedOperationException("hard links not supported");
+        IOException translated = PerWorldLegacyMigration.asPersistenceFailure(worldServerConfigDir, cause);
+        assertEquals(cause, translated.getCause());
+    }
 }
