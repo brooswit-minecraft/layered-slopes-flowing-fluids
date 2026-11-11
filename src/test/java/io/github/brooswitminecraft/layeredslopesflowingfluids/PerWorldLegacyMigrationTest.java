@@ -3,6 +3,7 @@ package io.github.brooswitminecraft.layeredslopesflowingfluids;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -14,8 +15,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Pure, Minecraft/NeoForge-free coverage of {@link PerWorldLegacyMigration}'s decision logic and
- * on-disk mechanism -- {@code decide}/{@code alreadyConfigured}/{@code writeOverrideFile} only
- * ever touch the {@code Path}s they are handed, the same {@code @TempDir}-per-world pattern
+ * on-disk mechanism -- {@code decide}/{@code alreadyConfigured}/{@code writeOverrideFileAtomically}
+ * only ever touch the {@code Path}s they are handed, the same {@code @TempDir}-per-world pattern
  * {@link LegacyConfigMigrationTest} already uses. {@link PerWorldLegacyMigration#apply} itself
  * reads/writes {@link FlowingFluidsConfig}'s live {@code ModConfigSpec} fields, which require the
  * NeoForge/Minecraft classpath this plain unit-test source set does not have (same reason
@@ -98,16 +99,46 @@ class PerWorldLegacyMigrationTest {
     }
 
     @Test
-    void writeOverrideFilePersistsTheMigratedChoiceAndTheGivenChanceScaleAsAPerWorldOverride(@TempDir Path worldServerConfigDir) throws IOException {
+    void writeOverrideFileAtomicallyPersistsTheMigratedChoiceAndTheGivenChanceScaleAsAPerWorldOverride(@TempDir Path worldServerConfigDir) throws IOException {
         // chanceScale is passed in explicitly, not read from any live config here (this method
         // stays free of the NeoForge classpath this plain unit-test source set does not have --
         // see the class doc) -- coordinator review, MINECRAFT-514 comment 53155: it must be
         // written explicitly so a customized value survives, not merely left to NeoForge's own
         // spec default on a later "correcting" rewrite.
-        PerWorldLegacyMigration.writeOverrideFile(worldServerConfigDir, new PerWorldLegacyMigration.Override(true, 64), 0.5);
+        PerWorldLegacyMigration.writeOverrideFileAtomically(worldServerConfigDir, new PerWorldLegacyMigration.Override(true, 64), 0.5);
         String written = Files.readString(worldServerConfigDir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
         assertTrue(written.contains("erosionEnabled = true"));
         assertTrue(written.contains("samplesPerSecond = 64"));
         assertTrue(written.contains("chanceScale = 0.5"));
+    }
+
+    @Test
+    void writeOverrideFileAtomicallyLeavesNoTemporaryFileBehindOnSuccess(@TempDir Path worldServerConfigDir) throws IOException {
+        PerWorldLegacyMigration.writeOverrideFileAtomically(worldServerConfigDir, new PerWorldLegacyMigration.Override(true, 64), 1.0);
+        try (var entries = Files.list(worldServerConfigDir)) {
+            java.util.List<String> names = entries.map(p -> p.getFileName().toString()).toList();
+            assertEquals(java.util.List.of(PerWorldLegacyMigration.OVERRIDE_FILE_NAME), names);
+        }
+    }
+
+    @Test
+    void writeOverrideFileAtomicallyNeverReplacesAConcurrentlyAppearingFinalFile(@TempDir Path worldServerConfigDir) throws IOException {
+        // MINECRAFT-514 self-review (comment 53160): the final path is never overwritten by the
+        // atomic move -- a final file that appeared in the meantime (an admin's own edit, or
+        // another run of this exact migration winning a race) must win untouched, byte-for-byte,
+        // and this must throw so the caller knows nothing of ITS OWN decision was persisted.
+        String existing = "erosionEnabled = true\nsamplesPerSecond = 999\n";
+        Path finalFile = worldServerConfigDir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME);
+        Files.writeString(finalFile, existing);
+
+        assertThrows(IOException.class, () ->
+                PerWorldLegacyMigration.writeOverrideFileAtomically(worldServerConfigDir, new PerWorldLegacyMigration.Override(false, 0), 0.0));
+
+        assertEquals(existing, Files.readString(finalFile), "an existing final file must survive byte-for-byte");
+        try (var entries = Files.list(worldServerConfigDir)) {
+            java.util.List<String> names = entries.map(p -> p.getFileName().toString()).toList();
+            assertEquals(java.util.List.of(PerWorldLegacyMigration.OVERRIDE_FILE_NAME), names,
+                    "no leftover temporary file may remain after a failed write");
+        }
     }
 }

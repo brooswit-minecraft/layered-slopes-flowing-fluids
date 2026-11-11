@@ -19,7 +19,12 @@ bump: patch
   override this migration writes now also explicitly preserves the currently-effective
   `chanceScale` (not just `erosionEnabled`/`samplesPerSecond`), so an admin's own customized
   global value survives into it instead of being silently reset to the spec default the next
-  time NeoForge "corrects" that minimal file's formatting.
+  time NeoForge "corrects" that minimal file's formatting. The persisted override is now also
+  written failure-atomically (fsync'd to a same-directory temp file, then linked into the final
+  path, never overwriting an existing one), and live config is only ever mutated AFTER that
+  persist succeeds -- a disk/creation/interruption failure can no longer leave this run's live
+  values changed with no matching durable record, which a later restart would otherwise silently
+  mistake for "nothing to migrate" and re-derive from the global default instead.
 - A valid inline TOML comment after `erosionEnabled`/`waterSamplesPerSecond` in a legacy config
   (`erosionEnabled = true # comment`) is now actually parsed for its real value instead of being
   silently treated as absent.

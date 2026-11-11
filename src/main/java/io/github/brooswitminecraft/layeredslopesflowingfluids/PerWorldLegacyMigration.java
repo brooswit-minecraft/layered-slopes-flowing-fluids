@@ -4,8 +4,12 @@ import net.minecraft.world.level.storage.LevelResource;
 import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 
 /**
  * MINECRAFT-514: {@link FlowingFluidsConfig}'s migrated default is computed once, at class
@@ -46,7 +50,7 @@ import java.nio.file.Path;
  * {@code ConfigTracker} loads the GLOBAL file (confirmed: its own debug log names the global
  * path, e.g. {@code .../config/layeredslopesflowingfluids-server.toml}) BEFORE {@code
  * ServerAboutToStartEvent} fires -- this method's {@code .set()} calls are what make that run's
- * LIVE values correct; the override file {@link #writeOverrideFile} persists is not re-read
+ * LIVE values correct; the override file {@link #writeOverrideFileAtomically} persists is not re-read
  * during this same run. On a LATER, separate start of that same world, {@code ConfigTracker}
  * itself finds and loads the per-world override NATIVELY -- confirmed by its own log line,
  * {@code "Found config file override in path ./world/serverconfig/layeredslopesflowingfluids-
@@ -79,7 +83,13 @@ final class PerWorldLegacyMigration {
      * filesystem write at all (self-review, MINECRAFT-514 comment 53158: an earlier design wrote
      * a diagnostic-only file on every call, including this no-op branch and the already-configured
      * branch -- a production side effect on exactly the paths required to leave a world's own
-     * config completely untouched).
+     * config completely untouched). Persistence happens BEFORE any live {@code .set()} call, and
+     * only a successful persist leads to a live mutation at all (self-review, MINECRAFT-514
+     * comment 53160: the previous order set live values first, so a disk/creation/interruption
+     * failure during the write could leave this run's live values changed with no matching
+     * persisted record -- a silent, unrecoverable loss of the world's legacy choice on the very
+     * next restart, since {@link #alreadyConfigured} would then see no override file and
+     * re-derive from the global default instead).
      */
     static void apply(Path worldServerConfigDir) {
         if (alreadyConfigured(worldServerConfigDir)) {
@@ -89,8 +99,6 @@ final class PerWorldLegacyMigration {
         if (override == null) {
             return;
         }
-        FlowingFluidsConfig.EROSION_ENABLED.set(override.erosionEnabled());
-        FlowingFluidsConfig.SAMPLES_PER_SECOND.set(override.samplesPerSecond());
         try {
             // chanceScale is not itself part of Dynamic Terrain's legacy choice (it did not
             // exist there) -- captured here as whatever is ALREADY effective right now (loaded
@@ -100,15 +108,20 @@ final class PerWorldLegacyMigration {
             // not silently from its own spec default (coordinator review, MINECRAFT-514 comment
             // 53155: an admin's customized global chanceScale must survive into a per-world
             // override this class creates, not get silently reset to 1.0).
-            writeOverrideFile(worldServerConfigDir, override, FlowingFluidsConfig.CHANCE_SCALE.get());
+            writeOverrideFileAtomically(worldServerConfigDir, override, FlowingFluidsConfig.CHANCE_SCALE.get());
         } catch (IOException e) {
-            // The live .set() above already took effect for this run regardless; a write failure
-            // here just risks a redundant re-attempt on the next server start (still gated by
-            // alreadyConfigured, which would then see the file is still missing), not a silently
-            // wrong decision or a lost admin edit.
+            // Persistence failed (including a concurrently-appearing override winning the
+            // atomic move -- see writeOverrideFileAtomically): leave the already-loaded/live
+            // config exactly as is, never mutate it from a decision that was never durably
+            // recorded. A future server start finds the same unconfigured state and simply
+            // retries this same decision from scratch.
             LayeredSlopesFlowingFluidsMod.LOGGER.warn(
-                    "MINECRAFT-514 per-world legacy config migration could not write to {}", worldServerConfigDir, e);
+                    "MINECRAFT-514 per-world legacy config migration could not persist to {}; live config left untouched this run",
+                    worldServerConfigDir, e);
+            return;
         }
+        FlowingFluidsConfig.EROSION_ENABLED.set(override.erosionEnabled());
+        FlowingFluidsConfig.SAMPLES_PER_SECOND.set(override.samplesPerSecond());
     }
 
     /**
@@ -145,16 +158,40 @@ final class PerWorldLegacyMigration {
      * FlowingFluidsConfig} access, so it stays testable without the NeoForge/Minecraft classpath
      * a plain unit test does not have) as this world's own per-world config override file, so a
      * future restart of this exact world loads the correct values natively through NeoForge's
-     * own per-world serverconfig mechanism, independent of the global config's own default. Only
-     * ever called by {@link #apply} when {@link #alreadyConfigured} has just confirmed no such
-     * file exists yet, so this never overwrites or truncates existing content.
+     * own per-world serverconfig mechanism, independent of the global config's own default.
+     *
+     * <p>Failure-atomic (self-review, MINECRAFT-514 comment 53160): the full content is written
+     * and {@code fsync}'d to a same-directory temporary file FIRST, then linked into the final
+     * path via {@link Files#createLink} -- confirmed, in THIS exact environment, to be the
+     * correct choice over {@code Files.move(..., ATOMIC_MOVE)}: that moves via a raw POSIX
+     * {@code rename(2)}, which silently OVERWRITES an existing destination rather than failing
+     * (observed directly -- an earlier version of this method using {@code ATOMIC_MOVE} did not
+     * throw when the destination already existed). {@code createLink} instead throws {@link
+     * java.nio.file.FileAlreadyExistsException} if the final path already exists, rather than
+     * overwriting a final file that someone/something else created in the meantime (an admin's
+     * own edit, or another run of this exact migration winning a race) -- and can never leave a
+     * half-written final file behind on a disk/creation/interruption failure, since the only
+     * write to the FINAL path is linking an already-complete, already-{@code fsync}'d temp file.
+     * The temp file is removed in every case (its data survives via the link on success). Throws
+     * on any failure -- including the already-exists race -- so the caller ({@link #apply}) can
+     * detect that nothing was durably persisted and must not treat this run's decision as applied.
      */
-    static void writeOverrideFile(Path worldServerConfigDir, Override override, double chanceScale) throws IOException {
+    static void writeOverrideFileAtomically(Path worldServerConfigDir, Override override, double chanceScale) throws IOException {
         Files.createDirectories(worldServerConfigDir);
-        Files.writeString(worldServerConfigDir.resolve(OVERRIDE_FILE_NAME),
-                "erosionEnabled = " + override.erosionEnabled() + "\n"
-                        + "samplesPerSecond = " + override.samplesPerSecond() + "\n"
-                        + "chanceScale = " + chanceScale + "\n");
+        Path finalFile = worldServerConfigDir.resolve(OVERRIDE_FILE_NAME);
+        String content = "erosionEnabled = " + override.erosionEnabled() + "\n"
+                + "samplesPerSecond = " + override.samplesPerSecond() + "\n"
+                + "chanceScale = " + chanceScale + "\n";
+        Path tempFile = Files.createTempFile(worldServerConfigDir, OVERRIDE_FILE_NAME + ".", ".tmp");
+        try {
+            try (FileChannel channel = FileChannel.open(tempFile, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                channel.write(ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
+                channel.force(true);
+            }
+            Files.createLink(finalFile, tempFile);
+        } finally {
+            Files.deleteIfExists(tempFile);
+        }
     }
 
     record Override(boolean erosionEnabled, int samplesPerSecond) {}

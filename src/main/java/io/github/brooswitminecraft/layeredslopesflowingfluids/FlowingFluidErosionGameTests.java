@@ -983,7 +983,7 @@ public final class FlowingFluidErosionGameTests {
      * 53154 proved reload across two starts of the SAME world, but cannot by itself rule out
      * leakage into a DIFFERENT world. This proves two things with a real, on-disk GLOBAL config
      * file: (1) a per-world migration never writes to it at all -- {@link
-     * PerWorldLegacyMigration#writeOverrideFile} only ever targets the per-world {@code
+     * PerWorldLegacyMigration#writeOverrideFileAtomically} only ever targets the per-world {@code
      * serverconfig} directory it is handed, confirmed here byte-for-byte unchanged before/after a
      * real {@code apply()} run against this live server's own actual global config file; and (2)
      * a genuinely distinct world with no legacy/override file of its own retains the global
@@ -1031,6 +1031,48 @@ public final class FlowingFluidErosionGameTests {
                     helper.assertTrue(!PerWorldLegacyMigration.alreadyConfigured(worldB),
                             "a distinct world with nothing to migrate must never get an override file written for it");
                 });
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+            }
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514 self-review (comment 53160): persistence now happens strictly before any
+     * live {@code .set()} call -- a failed write must leave live config exactly as it already
+     * was, with no trusted override left behind for a later start to (wrongly) trust. Forces a
+     * real write failure by making the per-world {@code serverconfig} directory itself
+     * unwritable, so {@code Files.createTempFile} inside it genuinely fails, through the same
+     * production {@code apply()} method and live {@code FlowingFluidsConfig} fields the other
+     * {@code apply()}-exercising GameTests use.
+     */
+    @GameTest(template = "flat_platform")
+    public static void applyNeverMutatesLiveValuesWhenPersistenceFails(GameTestHelper helper) {
+        withTempWorldServerConfigDir(dir -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            try {
+                Files.writeString(dir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = true\nwaterSamplesPerSecond = 555\n");
+
+                boolean madeUnwritable = dir.toFile().setWritable(false);
+                helper.assertTrue(madeUnwritable, "fixture setup failed: could not make the directory unwritable");
+                try {
+                    PerWorldLegacyMigration.apply(dir);
+                } finally {
+                    dir.toFile().setWritable(true); // restore so cleanup can remove the directory afterward
+                }
+
+                helper.assertTrue(FlowingFluidsConfig.EROSION_ENABLED.get() == previousEnabled,
+                        "a persistence failure must never mutate live erosionEnabled, got " + FlowingFluidsConfig.EROSION_ENABLED.get());
+                helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == previousSamples,
+                        "a persistence failure must never mutate live samplesPerSecond, got " + FlowingFluidsConfig.SAMPLES_PER_SECOND.get());
+                helper.assertTrue(!PerWorldLegacyMigration.alreadyConfigured(dir),
+                        "a failed persistence attempt must never leave a trusted override file behind");
             } catch (java.io.IOException e) {
                 helper.fail("fixture setup failed: " + e);
             } finally {
