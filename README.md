@@ -127,18 +127,27 @@ leveling transfer calling the setter twice, inside a scheduled tick that may alr
 it once) must not have an inner call's completion incorrectly clear the signal while an outer
 call is still in progress.
 
-Review 53101 found the mixin's `HEAD`/`RETURN` pair alone is not exception-safe: a thrown setter
-skips `RETURN`, permanently stuck positive, after which every later manual edit anywhere would
-misread as real movement -- confirmed locally that this actually happens (a deliberately induced
-leak really does make a manual edit misread as verified). Fixed with a bounded safety net, not a
-replacement for the pair (which still handles the overwhelming non-exceptional case, including
-nesting, exactly): `FlowingFluidsCompat.onServerTickStart` forces the counter back to `0` at the
-start of every single server tick, bounding any such leak to, at most, the remainder of the one
-tick it happened on, and a fresh server/world session (`onServerStarting`) starts clean rather
-than carrying over whatever a previous one left behind. Not `ThreadLocal`-scoped: Minecraft's own
-world mutation (and therefore this exact setter) only ever runs on the single server thread, the
-same assumption every other static field in this class and in `RecentFlowActivity` already
-relies on without extra synchronization.
+Review 53101 found that version's plain `@Inject` `HEAD`/`RETURN` pair is not exception-safe: a
+thrown setter skips `RETURN`, permanently stuck positive, after which every later manual edit
+anywhere would misread as real movement -- confirmed locally that this actually happens (a
+deliberately induced leak really does make a manual edit misread as verified). Review 53103
+rejected bounding that with a per-tick reset alone (still leaves the rest of that one tick
+genuinely wrong, not merely "eventually corrected"), so `LevelingMixin` now wraps the original
+setter call in a genuine `try/finally` via MixinExtras' `@WrapMethod`, exception-safe by
+construction -- a `finally` block is a JLS guarantee to run on exceptional exit too, closing the
+window outright rather than bounding it. MixinExtras (`io.github.llamalad7:mixinextras-neoforge`)
+is jar-in-jar embedded (the standard NeoForge pattern for a small bundled library, confirmed
+locally in the built jar's `META-INF/jarjar/`) rather than relying on Flowing Fluids having
+already bootstrapped its own copy first, even though Flowing Fluids itself already depends on it
+too (confirmed by decompiling its own Create-compat mixins) -- this mod's own copy needs no
+install and no bootstrap call of its own, since the artifact self-registers via FML as its own
+`GAMELIBRARY` mod with its own bundled mixin config. `FlowingFluidsCompat.onServerTickStart`
+forcing the counter back to `0` at the start of every server tick, and `onServerStarting`
+resetting it for a fresh session, are kept purely as defense in depth under that real fix, not
+load-bearing correctness. Not `ThreadLocal`-scoped: Minecraft's own world mutation (and therefore
+this exact setter) only ever runs on the single server thread, the same assumption every other
+static field in this class and in `RecentFlowActivity` already relies on without extra
+synchronization.
 
 Bounded by design, per the ticket's "no persistent blocks, no forced chunk loads" requirement:
 a hard-capped (4096 entries, oldest evicted first), time-windowed (40 ticks) map populated purely
@@ -197,15 +206,19 @@ very next check -- proving the stale record is discarded immediately, not merely
 between two different-amount cells and calls the genuine public `FluidState.randomTick` directly
 (retrying up to a generous bound against the one remaining real randomness -- Flowing Fluids' own
 choice of scan direction -- rather than waiting on vanilla's probabilistic per-chunk scheduler)
-until a real random-leveling transfer happens, then asserts `RecentFlowActivity` verifies it --
-proving `LevelingMixin` actually closes the gap review 53094 found, not merely that the idea
-should work. `aLeakedLevelingDepthIsBoundedByThePerTickSafetyNet` first induces exactly the leak
-review 53101 described and confirms it really does cause a manual edit to misread as verified
-(restored immediately after, not left stuck across a real tick boundary, since the counter is a
-single process-wide field and other GameTests run concurrently in the same batch), proving the
-vulnerability was real -- then separately induces a stuck value and confirms the per-tick safety
-net actually clears it by the very next tick, and that a manual edit made after that reset
-correctly reads as negative again.
+until a real random-leveling transfer happens, then asserts `RecentFlowActivity` verifies it AND
+that `levelingDepth` has returned to its resting value (`0`) after the real transfer's two
+sequential setter calls -- proving `LevelingMixin` actually closes the gap review 53094 found and
+that its counter settles correctly across that real multi-call pattern, not merely that the idea
+should work. `aLeakedLevelingDepthIsBoundedByThePerTickSafetyNet` is the defense-in-depth
+regression under the real `@WrapMethod` fix (not a test of it: a `finally` block's guarantee to
+run on exceptional exit is a JLS property, not something that needs its own empirical proof the
+way the REJECTED `HEAD`/`RETURN` pair's gap did): it confirms a positive `levelingDepth` -- however
+it got there -- really does make a manual edit misread as verified (restored immediately after,
+not left stuck across a real tick boundary, since the counter is a single process-wide field and
+other GameTests run concurrently in the same batch), then separately induces a stuck value and
+confirms the per-tick safety net still actually clears it by the very next tick, and that a
+manual edit made after that reset correctly reads as negative again.
 
 Exact version tested coinstalled: Flowing Fluids `1.0.8-1.21-neoforge` (NeoForge, supports MC
 1.21/1.21.1), pinned by sha512 in `gradle.properties` against the real

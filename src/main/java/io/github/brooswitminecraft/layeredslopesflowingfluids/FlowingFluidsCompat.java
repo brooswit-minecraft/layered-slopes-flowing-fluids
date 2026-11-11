@@ -34,21 +34,21 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
  * inside a scheduled tick that may already be inside it once) must not have an inner call's
  * completion incorrectly clear the signal while an outer call is still in progress.
  *
- * <p>Self-review 53101: the mixin's {@code HEAD}/{@code RETURN} pair alone is not exception-safe
- * -- a thrown setter leaves {@code RETURN} never firing, permanently stuck positive, after which
- * every later manual edit at any position would incorrectly qualify as real movement. {@link
- * #onServerTickStart} forces this back to {@code 0} at the start of every single server tick,
- * bounding any such leak to, at most, the remainder of the one tick it happened on -- the
- * {@code HEAD}/{@code RETURN} pair still handles the overwhelming non-exceptional case exactly
- * (including correctly nested calls), this is strictly a bounded safety net under it, not a
- * replacement for it. {@link #isLoaded} is cached process-wide the same as everywhere else in
- * this class, with no per-world-session reset needed: {@link #levelingDepth} is reset by {@link
- * #onServerStarting} for the same reason (a fresh session starts clean, not carrying over
- * whatever a previous one happened to leave behind) and by every tick regardless, so a stale
- * value can survive, at most, until the very next tick starts, session boundary or not. Not
- * {@code ThreadLocal}-scoped: Minecraft's own world mutation (and therefore this exact setter)
- * only ever runs on the single server thread, the same assumption every other static field in
- * this class and in {@link RecentFlowActivity} already relies on without extra synchronization.
+ * <p>Self-review 53101/53103: an earlier version of {@code LevelingMixin} used a plain {@code
+ * @Inject} {@code HEAD}/{@code RETURN} pair, which is NOT exception-safe -- a thrown setter
+ * leaves {@code RETURN} never firing, permanently stuck positive, after which every later manual
+ * edit at any position (same tick or any later one) would incorrectly qualify as real movement.
+ * {@code LevelingMixin} now wraps the original setter call in a genuine {@code try/finally} (via
+ * MixinExtras' {@code @WrapMethod}), exception-safe by construction -- a {@code finally} block
+ * is a JLS guarantee to run on exceptional exit too, closing that window outright rather than
+ * merely bounding it. {@link #onServerTickStart} forcing {@link #levelingDepth} back to {@code
+ * 0} at the start of every single server tick, and {@link #onServerStarting} resetting it for a
+ * fresh session, are kept purely as defense in depth under that real fix, not load-bearing
+ * correctness -- bounding anything genuinely unanticipated to, at most, the remainder of one
+ * tick, never the correctness mechanism itself. Not {@code ThreadLocal}-scoped: Minecraft's own
+ * world mutation (and therefore this exact setter) only ever runs on the single server thread,
+ * the same assumption every other static field in this class and in {@link RecentFlowActivity}
+ * already relies on without extra synchronization.
  */
 public final class FlowingFluidsCompat {
     private static Boolean present;

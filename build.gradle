@@ -164,6 +164,15 @@ dependencies {
         runtimeOnly files(flowingFluidsJar).builtBy(tasks.named("downloadFlowingFluids"))
     }
 
+    // MixinExtras' @WrapOperation is the only portable way to genuinely wrap LevelingMixin's
+    // target method in a try/finally (self-review 53103: plain Mixin's HEAD/RETURN pair cannot
+    // do this -- RETURN never fires on a thrown exception). Jar-in-jar embedded (the standard
+    // NeoForge pattern for a small bundled library dependency) so this mod needs no separate
+    // install; the "mixinextras-neoforge" artifact self-registers via FML as a GAMELIBRARY with
+    // its own bundled mixin config, requiring no bootstrap call from this mod's own code.
+    compileOnly "io.github.llamalad7:mixinextras-neoforge:0.5.5"
+    jarJar "io.github.llamalad7:mixinextras-neoforge:[0.5,0.6)"
+
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"

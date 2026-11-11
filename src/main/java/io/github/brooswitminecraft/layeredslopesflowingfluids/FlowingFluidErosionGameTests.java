@@ -530,6 +530,13 @@ public final class FlowingFluidErosionGameTests {
                 helper.assertTrue(RecentFlowActivity.recentlyChanged(level, absoluteLow),
                         "a real Flowing Fluids random-leveling transfer must be verified by RecentFlowActivity, "
                                 + "got low=" + level.getFluidState(absoluteLow));
+                // A genuine leveling transfer calls the wrapped setter twice (once for each
+                // cell) within this single randomTick invocation -- proving LevelingMixin's
+                // counter actually settles back to its resting value across that real,
+                // sequential multi-call pattern, not just a single isolated call.
+                helper.assertTrue(FlowingFluidsCompat.levelingDepth == 0,
+                        "levelingDepth must return to 0 after a real leveling transfer's two sequential setter "
+                                + "calls complete, got " + FlowingFluidsCompat.levelingDepth);
                 helper.succeed();
                 return;
             }
@@ -540,17 +547,19 @@ public final class FlowingFluidErosionGameTests {
     }
 
     /**
-     * MINECRAFT-513 self-review 53101: {@code LevelingMixin}'s {@code HEAD}/{@code RETURN} pair
-     * alone is not exception-safe -- a thrown setter would leave {@code levelingDepth} stuck
-     * positive forever, after which later manual edits would incorrectly qualify as real
-     * movement. Simulates exactly that leaked state directly (restored to zero immediately
-     * after the one manual edit it brackets, not left stuck across a real tick boundary, since
-     * {@code levelingDepth} is a single process-wide field and other GameTests run concurrently
-     * in the same batch) and confirms the edit still read as verified while artificially stuck --
-     * proving the leak WOULD have caused the exact false positive under review, before asserting
-     * the per-tick safety net ({@code FlowingFluidsCompat.onServerTickStart}) actually clears a
-     * separately-induced stuck value by the very next tick, and that a manual edit made after
-     * that reset correctly reads as negative again.
+     * MINECRAFT-513 self-review 53101/53103: {@code LevelingMixin} now wraps the original setter
+     * call in a genuine {@code try/finally} ({@code @WrapMethod}), exception-safe by construction
+     * -- a {@code finally} block is a JLS guarantee to run on exceptional exit too, not something
+     * that needs its own empirical regression the way the REJECTED {@code HEAD}/{@code RETURN}
+     * pair's gap did (confirmed broken by the exact test this one replaces: that version proved
+     * the misread, this one no longer can, because the underlying bug it targeted is gone).
+     * {@link #aRandomLevelingTransferIsVerifiedByRecentFlowActivity} is the regression that
+     * matters now -- it already proves {@code levelingDepth} returns to its resting value after
+     * a REAL leveling transfer's two sequential setter calls, the actual call pattern Flowing
+     * Fluids produces. This test keeps only the DEFENSE-IN-DEPTH layer under that primary fix:
+     * {@code FlowingFluidsCompat.onServerTickStart} forcibly resetting the counter every tick
+     * regardless, confirmed to still actually clear a separately-induced stuck value by the very
+     * next tick, with a manual edit made after that reset correctly reading as negative again.
      */
     @GameTest(template = "flat_platform")
     public static void aLeakedLevelingDepthIsBoundedByThePerTickSafetyNet(GameTestHelper helper) {
@@ -559,18 +568,19 @@ public final class FlowingFluidErosionGameTests {
         var level = (ServerLevel) helper.getLevel();
         var absoluteContact = helper.absolutePos(contact);
 
-        // Phase 1: a leaked counter (simulating an exceptional exit skipping RETURN) really does
-        // cause a manual edit to misread as verified -- confirms the vulnerability review 53101
-        // described is real, not hypothetical, before proving it is bounded.
+        // Phase 1: confirms the counter genuinely gates verification at all (a positive value --
+        // however it got there -- really does make a manual edit misread as verified), so the
+        // per-tick reset below is proven to be clearing a signal that actually matters, not a
+        // field nothing reads.
         helper.setBlock(contact, flowingWater(4));
         FlowingFluidsCompat.levelingDepth = 1;
         helper.setBlock(contact, Blocks.WATER.defaultBlockState());
-        boolean misreadWhileLeaked = RecentFlowActivity.recentlyChanged(level, absoluteContact);
+        boolean misreadWhileStuck = RecentFlowActivity.recentlyChanged(level, absoluteContact);
         FlowingFluidsCompat.levelingDepth = 0;
         if (FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState())) {
-            helper.assertTrue(misreadWhileLeaked,
-                    "a leaked positive levelingDepth must actually cause a manual edit to misread as verified "
-                            + "(demonstrating the vulnerability under review), before the safety net is checked");
+            helper.assertTrue(misreadWhileStuck,
+                    "a positive levelingDepth must make a manual edit misread as verified, confirming the "
+                            + "signal the per-tick reset below is checked against actually matters");
         }
         RecentFlowActivity.forgetForTesting(level, absoluteContact);
 

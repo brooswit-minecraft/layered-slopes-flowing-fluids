@@ -37,7 +37,8 @@ bump: minor
   going undetected. Added a narrowly-targeted, optional (`@Pseudo`, skipped entirely when Flowing
   Fluids is absent) mixin on its own low-level fluid-amount setter -- the one point every one of
   its transfer paths, including this one, ultimately goes through -- closing the gap at its root
-  rather than patching around it. That mixin's own HEAD/RETURN pair was not exception-safe (a
-  thrown setter would leave it permanently stuck positive); bounded with a per-tick safety net
-  that forces it back to zero at the start of every server tick, verified to actually clear a
-  deliberately leaked value and to actually cause the misread it guards against before it does.
+  rather than patching around it. An initial plain `@Inject` HEAD/RETURN version was not
+  exception-safe (a thrown setter would leave it permanently stuck positive); replaced with a
+  genuine `try/finally` around the original call via MixinExtras' `@WrapMethod` (jar-in-jar
+  embedded), exception-safe by construction, with the per-tick reset kept only as defense in
+  depth under that real fix.

@@ -2,14 +2,13 @@ package io.github.brooswitminecraft.layeredslopesflowingfluids.mixin;
 
 import io.github.brooswitminecraft.layeredslopesflowingfluids.FlowingFluidsCompat;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.material.Fluid;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * MINECRAFT-513 self-review 53094: Flowing Fluids' own {@code isManeuveringFluids} flag is not
@@ -33,19 +32,31 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * target class cannot be found, which is the case for the entire standalone (no
  * {@code -PcoinstallFlowingFluids=true}) build and runtime -- no crash, no dependency, nothing
  * on the runtime classpath, matching every other door into Flowing Fluids this project uses.
+ *
+ * <p>Self-review 53103: a plain {@code @Inject} HEAD/RETURN pair is not genuinely exception-safe
+ * -- {@code RETURN} never fires on a thrown exception, so a same-tick manual edit made right
+ * after could still misread as verified before the next tick's safety net runs. MixinExtras'
+ * {@code @WrapMethod} is the one way to actually wrap the ORIGINAL target method call in a real
+ * {@code try/finally}, closing that window outright rather than merely bounding it. Flowing
+ * Fluids itself already depends on MixinExtras (confirmed by decompiling its own Create-compat
+ * mixins), but this mod declares and jar-in-jar embeds its own
+ * ({@code io.github.llamalad7:mixinextras-neoforge}) rather than relying on Flowing Fluids having
+ * already bootstrapped it first -- the exact same jar-in-jar pattern used for every other small
+ * bundled dependency in this ecosystem, and the artifact self-registers via FML as its own
+ * {@code GAMELIBRARY} mod with its own bundled mixin config, needing no bootstrap call from this
+ * mod's own code.
  */
 @Pseudo
 @Mixin(value = traben.flowing_fluids.FFFluidUtils.class, remap = false)
 abstract class LevelingMixin {
-    @Inject(method = "setFluidStateAtPosToNewAmount", at = @At("HEAD"))
-    private static void ls$before(LevelAccessor levelAccessor, BlockPos pos, Fluid fluid, int newAmount,
-            CallbackInfoReturnable<Boolean> cir) {
+    @WrapMethod(method = "setFluidStateAtPosToNewAmount")
+    private static boolean ls$wrap(LevelAccessor levelAccessor, BlockPos pos, Fluid fluid, int newAmount,
+            Operation<Boolean> original) {
         FlowingFluidsCompat.levelingDepth++;
-    }
-
-    @Inject(method = "setFluidStateAtPosToNewAmount", at = @At("RETURN"))
-    private static void ls$after(LevelAccessor levelAccessor, BlockPos pos, Fluid fluid, int newAmount,
-            CallbackInfoReturnable<Boolean> cir) {
-        FlowingFluidsCompat.levelingDepth--;
+        try {
+            return original.call(levelAccessor, pos, fluid, newAmount);
+        } finally {
+            FlowingFluidsCompat.levelingDepth--;
+        }
     }
 }
