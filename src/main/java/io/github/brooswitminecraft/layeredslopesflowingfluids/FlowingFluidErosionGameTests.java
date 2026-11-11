@@ -8,9 +8,11 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.Fluids;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -45,7 +47,11 @@ public final class FlowingFluidErosionGameTests {
     private FlowingFluidErosionGameTests() {}
 
     private static BlockState flowingWater() {
-        return Blocks.WATER.defaultBlockState().setValue(LiquidBlock.LEVEL, 3);
+        return flowingWater(3);
+    }
+
+    private static BlockState flowingWater(int amount) {
+        return Blocks.WATER.defaultBlockState().setValue(LiquidBlock.LEVEL, amount);
     }
 
     /**
@@ -80,7 +86,11 @@ public final class FlowingFluidErosionGameTests {
     public static void flowingWaterBesideAFullBlockConvertsItToFifteenLayers(GameTestHelper helper) {
         withErosionEnabled(() -> {
             helper.setBlock(POS, Blocks.STONE.defaultBlockState());
-            helper.setBlock(POS.relative(Direction.EAST), flowingWater());
+            BlockPos contact = POS.relative(Direction.EAST);
+            helper.setBlock(contact, flowingWater());
+            // An explicit empty neighbour makes this contact cell genuinely advancing (isAdvancing),
+            // not just "non-source" -- deterministic regardless of the template's own default terrain.
+            helper.setBlock(contact.relative(Direction.EAST), Blocks.AIR.defaultBlockState());
 
             double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
             helper.assertTrue(amount > 0, "flowing water beside the block must report a positive erosion amount");
@@ -101,7 +111,11 @@ public final class FlowingFluidErosionGameTests {
     public static void flowingWaterOverTheLastLayerErodesItToAir(GameTestHelper helper) {
         withErosionEnabled(() -> {
             helper.setBlock(POS, LayeredSlopesMod.LAYERED_STONE.get().defaultBlockState().setValue(LayeredBlock.LAYERS, 1));
-            helper.setBlock(POS.above(), flowingWater());
+            BlockPos contact = POS.above();
+            helper.setBlock(contact, flowingWater());
+            // An explicit empty neighbour makes this contact cell genuinely advancing (isAdvancing),
+            // not just "non-source" -- deterministic regardless of the template's own default terrain.
+            helper.setBlock(contact.relative(Direction.EAST), Blocks.AIR.defaultBlockState());
 
             double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
             helper.assertTrue(amount > 0, "flowing water over the block must report a positive erosion amount");
@@ -116,12 +130,474 @@ public final class FlowingFluidErosionGameTests {
     @GameTest(template = "flat_platform")
     public static void stationarySourceWaterReportsNoErosionAmount(GameTestHelper helper) {
         helper.setBlock(POS, Blocks.STONE.defaultBlockState());
-        helper.setBlock(POS.relative(Direction.EAST), Blocks.WATER.defaultBlockState()); // source: LEVEL defaults to 0
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, Blocks.WATER.defaultBlockState()); // source: LEVEL defaults to 0
+        // This test's OWN placement above is itself a genuine change RecentFlowActivity would
+        // otherwise (correctly) treat as "just happened" -- age it out so this test establishes a
+        // deliberately long-standing/static baseline rather than a just-placed one.
+        RecentFlowActivity.forgetForTesting(helper.getLevel(), helper.absolutePos(contact));
 
         double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
         helper.assertTrue(amount == 0, "still source water must never report an erosion amount, got " + amount);
         helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "the block must stay unchanged next to still source water");
         helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53031/53033: a flowing-type (non-source) contact cell that has
+     * already equalized -- every neighbour is either solid or same-fluid at an amount it cannot
+     * flow into -- must report no erosion amount, exactly like a source does, distinguishing a
+     * stationary pool from a genuinely advancing edge. This matters for both vanilla (a settled
+     * lake-shore edge) and the optional Flowing Fluids mod (which can deliberately let a
+     * partial-amount cell settle into exactly such a stationary, non-advancing pool).
+     */
+    @GameTest(template = "flat_platform")
+    public static void stationarySettledPartialWaterReportsNoErosionAmount(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, flowingWater(4));
+        // Surround the contact cell on every other side (and below) with solid stone: no empty
+        // neighbour, no lower-amount same-fluid neighbour -- isAdvancing must be false.
+        helper.setBlock(contact.relative(Direction.EAST), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.below(), Blocks.STONE.defaultBlockState());
+        // Age out this fixture's own placement (see stationarySourceWaterReportsNoErosionAmount).
+        RecentFlowActivity.forgetForTesting(helper.getLevel(), helper.absolutePos(contact));
+
+        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(amount == 0, "a fully equalized, non-advancing flowing-type pool must never report an erosion amount, got " + amount);
+        helper.assertTrue(helper.getBlockState(POS).is(Blocks.STONE), "the block must stay unchanged next to a settled pool");
+        helper.succeed();
+    }
+
+    /**
+     * The same equalized surroundings as {@link #stationarySettledPartialWaterReportsNoErosionAmount},
+     * except the contact cell's downward neighbour is open -- it is still genuinely advancing
+     * (could still flow down into that gap) and must erode normally.
+     */
+    @GameTest(template = "flat_platform")
+    public static void anAdvancingPartialWaterReportsAPositiveErosionAmount(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, flowingWater(4));
+        helper.setBlock(contact.relative(Direction.EAST), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.below(), Blocks.AIR.defaultBlockState());
+
+        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(amount > 0, "a flowing-type cell with an open neighbour to fall into must report a positive erosion amount, got " + amount);
+        helper.succeed();
+    }
+
+    /**
+     * A full (amount 8), non-source cell is a falling waterfall column: it must always be treated
+     * as advancing, with no neighbour check, matching the ticket's explicit "moving full cells"
+     * erosion requirement.
+     */
+    @GameTest(template = "flat_platform")
+    public static void aFullNonSourceFallingColumnReportsTheMaximumErosionAmount(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        // LiquidBlock.LEVEL=8 is specifically the falling-column cache entry (fluid.getFlowing(8, true):
+        // amount=8, falling=true, isSource()=false) -- confirmed by decompiling vanilla's own
+        // LiquidBlock constructor, which builds its 9-entry stateCache exactly this way.
+        helper.setBlock(contact, flowingWater(8));
+        // Fully enclosed: a settled/equalized cell would report 0, but a full non-source cell must
+        // report the maximum amount regardless, since it is always treated as advancing.
+        helper.setBlock(contact.relative(Direction.EAST), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.below(), Blocks.STONE.defaultBlockState());
+
+        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(amount == FluidMath.FLOWING,
+                "a full non-source falling column must report the maximum erosion amount regardless of neighbours, got " + amount);
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53049/53050/53051: an amount/source-ness change alone is not
+     * evidence of WHO changed it -- a manual {@code helper.setBlock} (a GameTest fixture, a
+     * player, another mod) must never be mistaken for Flowing Fluids' own real transfer, even
+     * when Flowing Fluids is loaded and governing this fluid. {@link RecentFlowActivity} only
+     * ever records a position while {@link FlowingFluidsCompat#isCurrentlyTicking()} is true,
+     * and a manual placement never runs during that window, so this must read as the ordinary
+     * static-source no-op in every configuration this suite runs under.
+     */
+    @GameTest(template = "flat_platform", timeoutTicks = 100)
+    public static void aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, flowingWater(4));
+        // A manual amount/source-ness change at the SAME position (4 -> source) -- exactly the
+        // kind of edit a careless "did it change" heuristic could mistake for a real transfer.
+        helper.setBlock(contact, Blocks.WATER.defaultBlockState());
+
+        double justChanged = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(justChanged == 0,
+                "a manual amount change must never erode a source cell, with or without Flowing Fluids loaded, got " + justChanged);
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53041: a {@code BlockEvent.NeighborNotifyEvent} at one position
+     * must never make an unrelated position read as "recently changed" -- RecentFlowActivity is
+     * keyed per-position, not a single global flag.
+     */
+    @GameTest(template = "flat_platform")
+    public static void anUnrelatedNeighborNotificationDoesNotMarkAnotherPositionAsRecentlyChanged(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        helper.setBlock(contact, flowingWater(4));
+        // Surround it as a fully settled, non-advancing pool -- only RecentFlowActivity could
+        // make this erosive, so an unrelated notification elsewhere must never do so.
+        helper.setBlock(contact.relative(Direction.EAST), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.NORTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.relative(Direction.SOUTH), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact.below(), Blocks.STONE.defaultBlockState());
+        RecentFlowActivity.forgetForTesting(helper.getLevel(), helper.absolutePos(contact));
+
+        // An unrelated position (POS.below(): never read by strongestFlowAround, which skips
+        // DOWN) gets its own unrelated edit.
+        BlockPos unrelated = POS.below();
+        helper.setBlock(unrelated, flowingWater(4));
+        helper.setBlock(unrelated, Blocks.WATER.defaultBlockState());
+
+        double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(POS));
+        helper.assertTrue(amount == 0,
+                "activity at an unrelated position must not make this settled pool erosive, got " + amount);
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53036: a synthetic, hand-constructed state does not prove the
+     * decision logic reacts correctly to a REAL fluid-tick transfer. This places a genuine water
+     * source on open ground and lets the server's own scheduled fluid ticks run (the real
+     * vanilla engine, or the real Flowing Fluids engine's mixin replacement when that mod is
+     * coinstalled -- this test makes no assumption about which) before querying the actual
+     * production decision against whatever state that real simulation produced next to the
+     * target. {@code strongestFlowAround} never reports anything for a static source's OWN
+     * position (a never-fed, never-draining source is correctly a no-op, like any other still
+     * source), so the target must be the cell the water actually SPREADS INTO, one past the
+     * source -- confirmed locally (run repeatedly) that leaving every other direction open lets
+     * Flowing Fluids' finite simulation sometimes pick a different spread direction first, or
+     * spread too thinly to ever reach that one cell within the timeout, in an essentially random
+     * order unrelated to whether the production decision reacting to real physics works.
+     * Confirmed locally, in the other direction, that fully dead-ending the channel (no open or
+     * lower-amount neighbour left at all once it fills) makes vanilla correctly settle it as a
+     * non-advancing pool -- exactly {@code isAdvancing}'s intended "settled, like a still source"
+     * case, not a bug, but then this test would need Flowing Fluids' {@code RecentFlowActivity}
+     * override to pass under vanilla too, which defeats the point of testing real vanilla
+     * physics. The channel keeps one side permanently open (never dead-ends) so it stays
+     * genuinely advancing under either engine the instant real physics gets any water into it at
+     * all -- removing both sources of non-determinism without relying on which engine is active.
+     */
+    @GameTest(template = "fluid_flow_platform", timeoutTicks = 200)
+    public static void realFlowingWaterAdvancesAndErodesWhatItTouches(GameTestHelper helper) {
+        BlockPos pos = new BlockPos(1, 2, 1);
+        BlockPos channel = new BlockPos(2, 2, 1);
+        BlockPos source = new BlockPos(3, 2, 1);
+        helper.setBlock(pos, Blocks.STONE.defaultBlockState());
+        // Solid ground support under both cells (not the template's own default terrain --
+        // confirmed locally that water without it simply falls straight through and drains
+        // away), and wall off the source's other directions so it can only reach the channel.
+        // The channel's own north side stays open (air): the one deliberate escape that keeps it
+        // genuinely advancing, by definition, as soon as any real water reaches it at all.
+        helper.setBlock(channel.below(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(channel.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(channel.above(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(source.below(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(source.north(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(source.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(source.above(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(source.east(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(source, Blocks.WATER.defaultBlockState());
+
+        helper.succeedWhen(() -> {
+            double amount = FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(pos));
+            helper.assertTrue(amount > 0,
+                    "real fluid-tick physics from a live source, with only one possible direction to spread, "
+                            + "must at some point report a positive erosion amount next to the target within the "
+                            + "timeout, got " + amount
+                            + " (channel fluid state: " + helper.getLevel().getFluidState(helper.absolutePos(channel)) + ")");
+        });
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53049/53050/53051/53074/53081: proves a real, physics-driven
+     * fill to a FULL cell at the exact fed position, attributed specifically to {@link
+     * RecentFlowActivity} (not merely a nonzero aggregate reading a partial cell could also
+     * satisfy), erodes -- with NO manual edit of the fed position itself after the feed starts,
+     * the gap {@link #aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids} deliberately
+     * does not close. A single source feeds straight down into a cell enclosed on every other
+     * side. Review 53081 found phase 1 accepted either outcome without asserting which engine
+     * SHOULD be active, so a real Flowing Fluids integration failure under the coinstalled job
+     * could silently pass via the vanilla fallback alternative; the expected mode is now decided
+     * upfront from {@link FlowingFluidsCompat#isGoverning} and phase 1 REQUIRES that exact
+     * outcome (the real full source verified by RecentFlowActivity when Flowing Fluids is
+     * governing water; vanilla's always-advancing full non-source falling column only as a
+     * fallback) rather than accepting whichever happens to show up. Removing the feed and
+     * waiting past the recent window proves the fluid is RETAINED, stationary, with erosion
+     * genuinely stopped -- not merely drained away, which {@code amount == 0} alone could not
+     * tell apart -- confirmed locally under both engines.
+     */
+    @GameTest(template = "fluid_flow_platform", timeoutTicks = 200)
+    public static void aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp(GameTestHelper helper) {
+        BlockPos source = new BlockPos(1, 3, 1);
+        BlockPos fed = new BlockPos(1, 2, 1);
+        BlockPos contact = new BlockPos(2, 2, 1);
+        // Enclose "fed" on every side except above (where the source feeds it) and the one
+        // contact face -- confining it into a bucket that must fill toward full rather than
+        // draining laterally, without ever touching "fed" itself with a manual edit.
+        helper.setBlock(fed.north(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(fed.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(fed.west(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(contact, Blocks.STONE.defaultBlockState());
+        helper.setBlock(source, Blocks.WATER.defaultBlockState());
+        boolean flowingFluidsShouldGovern = FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState());
+
+        // Two phases, so this cannot use succeedWhen (which succeeds the instant its criterion
+        // stops throwing): poll every tick for the real fill to erode, then switch to proving it
+        // settles once the feed is gone. A guard flag keeps the phase-1 side effect (removing the
+        // source) from repeating on every subsequent tick once it has already fired.
+        var feedRemoved = new boolean[1];
+        helper.onEachTick(() -> {
+            if (feedRemoved[0]) {
+                return;
+            }
+            var level = (ServerLevel) helper.getLevel();
+            var absoluteFed = helper.absolutePos(fed);
+            var fedFluid = level.getFluidState(absoluteFed);
+            boolean required = flowingFluidsShouldGovern
+                    ? fedFluid.getAmount() >= FluidMath.FULL_FLUID && fedFluid.isSource()
+                            && RecentFlowActivity.recentlyChanged(level, absoluteFed)
+                    : fedFluid.getAmount() >= FluidMath.FULL_FLUID && !fedFluid.isSource();
+            double amount = FlowingFluidErosion.strongestFlowAround(level, helper.absolutePos(contact));
+            if (amount <= 0 || !required) {
+                return;
+            }
+            feedRemoved[0] = true;
+            helper.setBlock(source, Blocks.AIR.defaultBlockState());
+            helper.runAfterDelay(60, () -> {
+                var afterFluid = level.getFluidState(absoluteFed);
+                if (flowingFluidsShouldGovern) {
+                    // A genuine Flowing Fluids source is self-sustaining once created: it must
+                    // stay right there, stationary, with erosion genuinely stopped -- not merely
+                    // drained away, which amount == 0 alone could not tell apart.
+                    helper.assertTrue(!afterFluid.isEmpty(),
+                            "60 ticks after the feed is removed, a real Flowing Fluids source must retain its "
+                                    + "stationary fluid rather than drain away, got " + afterFluid);
+                } else {
+                    // Vanilla's own non-source falling column is NOT self-sustaining: with
+                    // nothing feeding it any more, draining away to empty is its own correct,
+                    // unforced "settled" outcome here, not a sign the check below is vacuous --
+                    // confirmed locally that it reliably does drain within this window.
+                    helper.assertTrue(afterFluid.isEmpty(),
+                            "60 ticks after the feed is removed, vanilla's unfed falling column must have drained "
+                                    + "away, got " + afterFluid);
+                }
+                helper.assertTrue(!RecentFlowActivity.recentlyChanged(level, absoluteFed),
+                        "60 ticks after the feed is removed, with no further real physics touching it, this "
+                                + "position must no longer verify as recently changed");
+                double afterSettling = FlowingFluidErosion.strongestFlowAround(level, helper.absolutePos(contact));
+                helper.assertTrue(afterSettling == 0,
+                        "60 ticks after the feed is removed, this must settle to the ordinary no-op, got " + afterSettling
+                                + " (fed cell fluid state: " + afterFluid + ")");
+                helper.succeed();
+            });
+        });
+        helper.runAfterDelay(100, () -> {
+            if (!feedRemoved[0]) {
+                helper.fail("a real physics-driven fill of an enclosed cell to full must verify and erode "
+                        + "within 100 ticks, got amount=" + FlowingFluidErosion.strongestFlowAround(helper.getLevel(), helper.absolutePos(contact))
+                        + " (fed cell fluid state: " + helper.getLevel().getFluidState(helper.absolutePos(fed)) + ")");
+            }
+        });
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53081: a disabled Flowing Fluids mod ({@code config.enableMod}
+     * false) means its own {@code ff$tickMixin} never cancels vanilla's tick (the {@code
+     * ci.cancel()} is conditional on exactly that flag, confirmed by decompiling the pinned jar),
+     * so vanilla's own fluid logic must govern instead -- {@link FlowingFluidsCompat#isGoverning}
+     * must read false, the one signal {@link RecentFlowActivity} itself gates on, so a real
+     * multi-tick physics fixture is not needed here (and toggling this GLOBAL config for several
+     * real ticks would risk interfering with any OTHER test's own Flowing Fluids physics running
+     * concurrently in the same batch -- this check is synchronous and toggles back before any
+     * other tick runs). A no-op pass-through whenever Flowing Fluids is not loaded at all, where
+     * {@code isGoverning} already reads false unconditionally.
+     */
+    @GameTest(template = "flat_platform")
+    public static void aDisabledFlowingFluidsNeverGovernsWater(GameTestHelper helper) {
+        FlowingFluidsCompat.withModDisabledForTesting(() ->
+                helper.assertTrue(!FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState()),
+                        "a disabled Flowing Fluids must never report governing water"));
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53081: the same fallback signal, but via Flowing Fluids' OTHER
+     * governance knob -- water added to its own fluid blacklist ({@code isFluidAllowed} false
+     * for water specifically) rather than the mod disabled outright.
+     */
+    @GameTest(template = "flat_platform")
+    public static void anIgnoredFluidIsNeverGoverned(GameTestHelper helper) {
+        FlowingFluidsCompat.withWaterIgnoredForTesting(() ->
+                helper.assertTrue(!FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState()),
+                        "an ignored fluid must never report as governed by Flowing Fluids"));
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53074: a manual replacement of a position's fluid must discard
+     * any existing RecentFlowActivity record for it immediately, not merely let it age out over
+     * the rest of the window. Lets a real Flowing Fluids transfer verify the confined fed
+     * position first, then manually replaces it and asserts recentlyChanged reads false on the
+     * very next check -- a no-op (trivially succeeds) whenever Flowing Fluids is not governing
+     * water, since nothing is ever recorded there to regress against in the first place.
+     */
+    @GameTest(template = "fluid_flow_platform", timeoutTicks = 200)
+    public static void aManualReplaceAfterARealTransferImmediatelyClearsTheStaleRecord(GameTestHelper helper) {
+        if (!FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState())) {
+            helper.succeed();
+            return;
+        }
+        BlockPos source = new BlockPos(1, 3, 1);
+        BlockPos fed = new BlockPos(1, 2, 1);
+        helper.setBlock(fed.north(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(fed.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(fed.west(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(fed.east(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(source, Blocks.WATER.defaultBlockState());
+        var level = (ServerLevel) helper.getLevel();
+        var absoluteFed = helper.absolutePos(fed);
+
+        helper.succeedWhen(() -> {
+            helper.assertTrue(RecentFlowActivity.recentlyChanged(level, absoluteFed),
+                    "a real Flowing Fluids transfer must verify this position before this regression can run");
+            helper.setBlock(fed, Blocks.STONE.defaultBlockState());
+            helper.assertTrue(!RecentFlowActivity.recentlyChanged(level, absoluteFed),
+                    "a manual replacement must immediately discard the stale record, not merely let it age out");
+        });
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53094: Flowing Fluids' own {@code isManeuveringFluids} flag is
+     * NOT set during its periodic random-leveling smoothing tick (confirmed by decompiling the
+     * pinned jar's bytecode -- two real {@code setFluidStateAtPosToNewAmount} calls, no flag
+     * access anywhere in that method), active by default. {@code LevelingMixin} closes that gap
+     * at the one low-level setter every Flowing Fluids transfer path ultimately calls, instead of
+     * that flag. {@code FluidState.randomTick} is called directly (a genuine public vanilla
+     * method, not a synthetic shortcut) rather than waiting on vanilla's own probabilistic
+     * per-chunk random-tick scheduler, which would make this nondeterministic; the direction
+     * Flowing Fluids' own leveling scan picks is still genuinely random, so this retries up to a
+     * generous bound -- with every other direction walled off, only the one real transfer this
+     * test cares about can ever succeed, so a retry is exactly as deterministic as the single-shot
+     * fixtures elsewhere in this class. A no-op pass-through whenever Flowing Fluids is not
+     * governing water, where vanilla's own {@code randomTick} has no leveling behavior to trigger
+     * at all.
+     */
+    @GameTest(template = "fluid_flow_platform")
+    public static void aRandomLevelingTransferIsVerifiedByRecentFlowActivity(GameTestHelper helper) {
+        if (!FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState())) {
+            helper.succeed();
+            return;
+        }
+        BlockPos high = new BlockPos(1, 2, 1);
+        BlockPos low = new BlockPos(2, 2, 1);
+        // Wall off every direction except the one straight line from "high" to "low": the only
+        // path Flowing Fluids' own random-direction leveling scan can ever actually find water
+        // through, regardless of which direction it happens to pick this attempt.
+        helper.setBlock(high.north(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(high.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(high.above(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(low.north(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(low.south(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(low.above(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(low.east(), Blocks.STONE.defaultBlockState());
+        helper.setBlock(high, flowingWater(2)); // amount 6
+        helper.setBlock(low, flowingWater(6)); // amount 2
+        var level = (ServerLevel) helper.getLevel();
+        var absoluteHigh = helper.absolutePos(high);
+        var absoluteLow = helper.absolutePos(low);
+        int lowAmountBefore = level.getFluidState(absoluteLow).getAmount();
+
+        for (int attempt = 0; attempt < 500; attempt++) {
+            level.getFluidState(absoluteHigh).randomTick(level, absoluteHigh, level.getRandom());
+            if (level.getFluidState(absoluteLow).getAmount() != lowAmountBefore) {
+                helper.assertTrue(RecentFlowActivity.recentlyChanged(level, absoluteLow),
+                        "a real Flowing Fluids random-leveling transfer must be verified by RecentFlowActivity, "
+                                + "got low=" + level.getFluidState(absoluteLow));
+                // A genuine leveling transfer calls the wrapped setter twice (once for each
+                // cell) within this single randomTick invocation -- proving LevelingMixin's
+                // counter actually settles back to its resting value across that real,
+                // sequential multi-call pattern, not just a single isolated call.
+                helper.assertTrue(FlowingFluidsCompat.levelingDepth == 0,
+                        "levelingDepth must return to 0 after a real leveling transfer's two sequential setter "
+                                + "calls complete, got " + FlowingFluidsCompat.levelingDepth);
+                helper.succeed();
+                return;
+            }
+        }
+        helper.fail("a random-leveling transfer between these two cells never happened in 500 attempts -- "
+                + "either Flowing Fluids' own leveling precondition is not met here, or something about this "
+                + "fixture needs revisiting");
+    }
+
+    /**
+     * MINECRAFT-513 self-review 53101/53103: {@code LevelingMixin} now wraps the original setter
+     * call in a genuine {@code try/finally} ({@code @WrapMethod}), exception-safe by construction
+     * -- a {@code finally} block is a JLS guarantee to run on exceptional exit too, not something
+     * that needs its own empirical regression the way the REJECTED {@code HEAD}/{@code RETURN}
+     * pair's gap did (confirmed broken by the exact test this one replaces: that version proved
+     * the misread, this one no longer can, because the underlying bug it targeted is gone).
+     * {@link #aRandomLevelingTransferIsVerifiedByRecentFlowActivity} is the regression that
+     * matters now -- it already proves {@code levelingDepth} returns to its resting value after
+     * a REAL leveling transfer's two sequential setter calls, the actual call pattern Flowing
+     * Fluids produces. This test keeps only the DEFENSE-IN-DEPTH layer under that primary fix:
+     * {@code FlowingFluidsCompat.onServerTickStart} forcibly resetting the counter every tick
+     * regardless, confirmed to still actually clear a separately-induced stuck value by the very
+     * next tick, with a manual edit made after that reset correctly reading as negative again.
+     */
+    @GameTest(template = "flat_platform")
+    public static void aLeakedLevelingDepthIsBoundedByThePerTickSafetyNet(GameTestHelper helper) {
+        helper.setBlock(POS, Blocks.STONE.defaultBlockState());
+        BlockPos contact = POS.relative(Direction.EAST);
+        var level = (ServerLevel) helper.getLevel();
+        var absoluteContact = helper.absolutePos(contact);
+
+        // Phase 1: confirms the counter genuinely gates verification at all (a positive value --
+        // however it got there -- really does make a manual edit misread as verified), so the
+        // per-tick reset below is proven to be clearing a signal that actually matters, not a
+        // field nothing reads.
+        helper.setBlock(contact, flowingWater(4));
+        FlowingFluidsCompat.levelingDepth = 1;
+        helper.setBlock(contact, Blocks.WATER.defaultBlockState());
+        boolean misreadWhileStuck = RecentFlowActivity.recentlyChanged(level, absoluteContact);
+        FlowingFluidsCompat.levelingDepth = 0;
+        if (FlowingFluidsCompat.isGoverning(Fluids.WATER.defaultFluidState())) {
+            helper.assertTrue(misreadWhileStuck,
+                    "a positive levelingDepth must make a manual edit misread as verified, confirming the "
+                            + "signal the per-tick reset below is checked against actually matters");
+        }
+        RecentFlowActivity.forgetForTesting(level, absoluteContact);
+
+        // Phase 2: a separately-induced stuck value, left for the per-tick safety net to find
+        // rather than cleared immediately, must actually be cleared by the very next tick.
+        FlowingFluidsCompat.levelingDepth = 1;
+        helper.runAfterDelay(1, () -> {
+            helper.assertTrue(FlowingFluidsCompat.levelingDepth == 0,
+                    "a leaked positive levelingDepth must reset to 0 at the start of the next tick, got "
+                            + FlowingFluidsCompat.levelingDepth);
+            helper.setBlock(contact, Blocks.STONE.defaultBlockState());
+            helper.setBlock(contact, Blocks.WATER.defaultBlockState());
+            double amount = FlowingFluidErosion.strongestFlowAround(level, helper.absolutePos(POS));
+            helper.assertTrue(amount == 0,
+                    "once the leaked counter is reset, a manual edit must read as negative again, got " + amount);
+            helper.succeed();
+        });
     }
 
     /**

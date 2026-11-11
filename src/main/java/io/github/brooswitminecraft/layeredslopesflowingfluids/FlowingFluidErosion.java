@@ -22,10 +22,18 @@ import java.util.Set;
  *
  * <p>Eligibility is by the vanilla {@link FluidTags#WATER} tag, not a hardcoded fluid list, so
  * compatible modded water-like fluids erode too without code changes here; lava/heat erosion is
- * explicitly out of this ticket's scope (Dynamic Terrain's own heat erosion owns that). Only
- * flowing (non-source) contact counts -- see {@link FluidMath#amount}; still source water next
- * to a block is a no-op, distinguishing actively flowing fluid from static contact per the
- * ticket.
+ * explicitly out of this ticket's scope (Dynamic Terrain's own heat erosion owns that). A
+ * contact's amount comes from {@link #contactAmount}: ordinarily, flowing (non-source) contact
+ * only counts if it is genuinely {@link #isAdvancing} -- has an actual neighbour it could still
+ * spread into right now -- so a stationary, locally-equalized flowing-type pool no-ops just like
+ * a source does, distinct from an edge still advancing downhill (mirrors Flowing Fluids' own
+ * decompiled {@code canFitIntoFluid} precondition, also vanilla's own, not Flowing-Fluids-
+ * specific). But a source contact also counts, independent of that geometric check, if
+ * {@link RecentFlowActivity} recorded it as having actually just changed: the optional Flowing
+ * Fluids mod represents EVERY full cell as a source state, including one its own finite
+ * simulation is actively feeding or draining (self-review 53037), so {@code isSource()} alone
+ * cannot tell a genuinely still-transferring full cell apart from a permanently static ocean or
+ * lake under that mod -- real, mod-agnostic change evidence can.
  *
  * <p>Sampling random positions once per second, rather than hooking fluid-flow update events, is
  * most of what keeps one flow from multiplying erosion through repeated hooks -- but that alone
@@ -104,11 +112,74 @@ public final class FlowingFluidErosion {
             if (direction == Direction.DOWN) {
                 continue;
             }
-            FluidState fluid = level.getFluidState(pos.relative(direction));
+            BlockPos contactPos = pos.relative(direction);
+            if (!level.isLoaded(contactPos)) {
+                continue;
+            }
+            FluidState fluid = level.getFluidState(contactPos);
             if (!fluid.isEmpty() && fluid.is(FluidTags.WATER)) {
-                strongest = Math.max(strongest, FluidMath.amount(fluid.isSource(), fluid.getAmount()));
+                strongest = Math.max(strongest, contactAmount(level, contactPos, fluid));
             }
         }
         return strongest;
+    }
+
+    /**
+     * The erosion amount a single fluid contact contributes. A source contact is ordinarily
+     * non-erosive, but counts at the maximum amount if {@link RecentFlowActivity} recorded it as
+     * having genuinely just changed -- real, mod-agnostic evidence of an active transfer that a
+     * bare {@code isSource()} check cannot provide once the optional Flowing Fluids mod is
+     * involved (see the class doc). A non-source contact counts only if it is {@link #isAdvancing}.
+     */
+    static double contactAmount(ServerLevel level, BlockPos contactPos, FluidState fluid) {
+        if (RecentFlowActivity.recentlyChanged(level, contactPos)) {
+            return FluidMath.FLOWING;
+        }
+        if (fluid.isSource()) {
+            return 0;
+        }
+        return isAdvancing(level, contactPos, fluid) ? FluidMath.amount(false, fluid.getAmount()) : 0;
+    }
+
+    /**
+     * Whether the flowing (non-source) fluid at {@code fluidPos} has an actual neighbour it could
+     * still spread into right now, as opposed to a stationary pool that has already equalized.
+     * Mirrors Flowing Fluids' own decompiled {@code canFitIntoFluid} precondition (also vanilla's
+     * own spread precondition, not something Flowing Fluids introduces): a horizontal neighbour
+     * must be air (checked on the BLOCK, not the fluid state -- a solid block's {@code FluidState}
+     * is ALSO {@code isEmpty()}, so a fluid-state-only check would misread a solid wall as open,
+     * self-review 53036's finding) or the same fluid at a strictly lower amount; the downward
+     * neighbour must be air or the same fluid below full (8). A full (amount 8), non-source cell
+     * -- a falling waterfall column, a vanilla-only representation (see README) -- is always
+     * advancing without needing a neighbour check. Only called for non-source contact; a source
+     * is handled separately by the caller (sources never "advance" themselves).
+     */
+    static boolean isAdvancing(ServerLevel level, BlockPos fluidPos, FluidState fluid) {
+        if (fluid.getAmount() >= FluidMath.FULL_FLUID) {
+            return true;
+        }
+        for (Direction direction : Direction.values()) {
+            if (direction == Direction.UP) {
+                continue;
+            }
+            BlockPos neighborPos = fluidPos.relative(direction);
+            if (!level.isLoaded(neighborPos)) {
+                continue;
+            }
+            // A solid block's FluidState is ALSO isEmpty() (no fluid there is not the same as "open
+            // to flow into"): an ordinary air check on the BLOCK, not the fluid, is what actually
+            // distinguishes "open" from "solid and blocking" (self-review 53036's finding).
+            if (level.getBlockState(neighborPos).isAir()) {
+                return true;
+            }
+            FluidState neighbor = level.getFluidState(neighborPos);
+            if (neighbor.isEmpty() || !neighbor.getType().isSame(fluid.getType())) {
+                continue;
+            }
+            if (direction == Direction.DOWN ? neighbor.getAmount() < FluidMath.FULL_FLUID : neighbor.getAmount() < fluid.getAmount()) {
+                return true;
+            }
+        }
+        return false;
     }
 }

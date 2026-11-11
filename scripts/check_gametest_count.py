@@ -23,9 +23,24 @@ class RuntimeEvidenceError(ValueError):
 
 
 # flowingWaterBesideAFullBlock.../flowingWaterOverTheLastLayer.../stationarySourceWater.../
-# aPositionAlreadyVisitedThisSecond.../chanceScaleZeroDisablesAnOtherwiseGuaranteedAttempt.../
-# aResistedRoll.../aCancelledProtectionHook.../erodingAFullGrassBlock...
-EXPECTED_REQUIRED_TEST_COUNT = 8
+# stationarySettledPartialWater.../anAdvancingPartialWater.../aFullNonSourceFallingColumn.../
+# aManualSourceCellChangeNeverErodesRegardlessOfFlowingFluids.../
+# anUnrelatedNeighborNotificationDoesNotMarkAnotherPositionAsRecentlyChanged.../
+# realFlowingWaterAdvancesAndErodesWhatItTouches.../
+# aRealFlowingFluidsDrivenFullCellErodesThenSettlesToNoOp.../
+# aDisabledFlowingFluidsNeverGovernsWater.../anIgnoredFluidIsNeverGoverned.../
+# aManualReplaceAfterARealTransferImmediatelyClearsTheStaleRecord.../
+# aRandomLevelingTransferIsVerifiedByRecentFlowActivity.../
+# aLeakedLevelingDepthIsBoundedByThePerTickSafetyNet.../
+# aPositionAlreadyVisitedThisSecond.../
+# chanceScaleZeroDisablesAnOtherwiseGuaranteedAttempt.../aResistedRoll.../
+# aCancelledProtectionHook.../erodingAFullGrassBlock.../
+# aVanillaFactoryConstructedFullStateIsSourceAndErodesNothing.../
+# aVanillaFactoryConstructedPartialStateIsFlowingAndErodes... (same count expected whether or
+# not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: these tests
+# erode via whichever real engine's own physics is actually active, never by assuming which one;
+# see FlowingFluidErosionGameTests)
+EXPECTED_REQUIRED_TEST_COUNT = 22
 
 
 def verify_runtime_log(log_text):

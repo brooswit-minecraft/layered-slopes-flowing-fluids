@@ -1,0 +1,9 @@
+{
+    "required": true,
+    "package": "io.github.brooswitminecraft.layeredslopesflowingfluids.mixin",
+    "compatibilityLevel": "JAVA_21",
+    "minVersion": "0.8",
+    "mixins": [
+        "LevelingMixin"
+    ]
+}
