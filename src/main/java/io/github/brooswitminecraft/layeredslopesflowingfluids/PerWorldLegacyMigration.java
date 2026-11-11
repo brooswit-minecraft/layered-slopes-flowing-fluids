@@ -34,6 +34,27 @@ import java.nio.file.Path;
  * {@link MigrationPolicy} exactly as the global path does, just pointed at a different file),
  * applied live for this run, and persisted as this world's own override file so a later restart
  * loads it natively through NeoForge's own per-world mechanism without this code's help.
+ *
+ * <p><b>Lifecycle evidence (coordinator review, MINECRAFT-514 comment 53153), confirmed live
+ * against two real, successive {@code runGameTestServer} starts of the same world save, not just
+ * read from NeoForge's docs:</b> {@link FlowingFluidsConfig#EROSION_ENABLED}/{@link
+ * FlowingFluidsConfig#SAMPLES_PER_SECOND} are process-wide static {@code ModConfigSpec} value
+ * singletons -- one shared in-memory backing store, matching one dedicated server process
+ * serving exactly one selected world for its lifetime (confirmed by the {@code ConfigTracker}
+ * "Loading configs type SERVER"/"Unloading configs type SERVER" pair bracketing each server
+ * start/stop). On the FIRST start for a world whose own per-world override is still absent,
+ * {@code ConfigTracker} loads the GLOBAL file (confirmed: its own debug log names the global
+ * path, e.g. {@code .../config/layeredslopesflowingfluids-server.toml}) BEFORE {@code
+ * ServerAboutToStartEvent} fires -- this method's {@code .set()} calls are what make that run's
+ * LIVE values correct; the override file {@link #writeOverrideFile} persists is not re-read
+ * during this same run. On a LATER, separate start of that same world, {@code ConfigTracker}
+ * itself finds and loads the per-world override NATIVELY -- confirmed by its own log line,
+ * {@code "Found config file override in path ./world/serverconfig/layeredslopesflowingfluids-
+ * server.toml"} -- with no help from this class at all (by then {@link #alreadyConfigured} is
+ * true, so {@link #apply} is a pure no-op). NeoForge also "corrects" that file on load, filling
+ * in any key this class's minimal 2-key write omitted (e.g. {@code chanceScale}) with its own
+ * spec default, while leaving the two keys this class DID write untouched -- confirmed by
+ * inspecting the file before and after that second start.
  */
 final class PerWorldLegacyMigration {
     static final String LEGACY_FILE_NAME = "dynamicterrain-server.toml";

@@ -17,6 +17,10 @@ bump: patch
 - A valid inline TOML comment after `erosionEnabled`/`waterSamplesPerSecond` in a legacy config
   (`erosionEnabled = true # comment`) is now actually parsed for its real value instead of being
   silently treated as absent.
+- A legacy `waterSamplesPerSecond` that fits in an `int` but is still outside this mod's own
+  `0..4096` spec (`4097`, `5000`, `Integer.MAX_VALUE`) is now normalized the same way an
+  out-of-`int`-range value already was, instead of passing straight through to the static config
+  default (which only validates, never clamps) or into a per-world override.
 - `LayerErosion.erode`'s public entrypoint now checks `level.isLoaded(pos)` itself, before any
   block/fluid state read, instead of relying entirely on its one existing caller
   (`FlowingFluidErosion.sampleAround`) to have pre-checked -- any other caller handing it an
