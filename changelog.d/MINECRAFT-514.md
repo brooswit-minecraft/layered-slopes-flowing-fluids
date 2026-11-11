@@ -13,7 +13,11 @@ bump: patch
   whether that world's own `serverconfig/layeredslopesflowingfluids-server.toml` override already
   exists -- for any reason -- and leaves it (and live config) completely alone if so; only when
   it's genuinely absent does it read that world's own legacy file and persist the correct choice.
-  A fresh world with no per-world legacy file at all is left completely untouched.
+  A fresh world with no per-world legacy file at all is left completely untouched. A per-world
+  override this migration writes now also explicitly preserves the currently-effective
+  `chanceScale` (not just `erosionEnabled`/`samplesPerSecond`), so an admin's own customized
+  global value survives into it instead of being silently reset to the spec default the next
+  time NeoForge "corrects" that minimal file's formatting.
 - A valid inline TOML comment after `erosionEnabled`/`waterSamplesPerSecond` in a legacy config
   (`erosionEnabled = true # comment`) is now actually parsed for its real value instead of being
   silently treated as absent.

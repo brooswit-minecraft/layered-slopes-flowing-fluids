@@ -945,4 +945,100 @@ public final class FlowingFluidErosionGameTests {
         }));
         helper.succeed();
     }
+
+    /**
+     * MINECRAFT-514 coordinator review (comment 53155): the currently-effective {@code
+     * chanceScale} must be captured and written explicitly into a per-world override, not left
+     * to NeoForge's own "correcting" rewrite to fill from its spec default -- that would silently
+     * reset an admin's own customized global value for this world specifically.
+     */
+    @GameTest(template = "flat_platform")
+    public static void applyPreservesTheCurrentlyEffectiveChanceScaleIntoTheOverrideFile(GameTestHelper helper) {
+        withTempWorldServerConfigDir(dir -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            double previousChanceScale = FlowingFluidsConfig.CHANCE_SCALE.get();
+            try {
+                FlowingFluidsConfig.CHANCE_SCALE.set(0.42); // a customized, non-default value
+                Files.writeString(dir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = true\nwaterSamplesPerSecond = 50\n");
+
+                PerWorldLegacyMigration.apply(dir);
+
+                String written = Files.readString(dir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
+                helper.assertTrue(written.contains("chanceScale = 0.42"),
+                        "the currently-effective chanceScale must be preserved into the per-world override, got: " + written);
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+                FlowingFluidsConfig.CHANCE_SCALE.set(previousChanceScale);
+            }
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514 coordinator review (comment 53155): the two-start experiment behind comment
+     * 53154 proved reload across two starts of the SAME world, but cannot by itself rule out
+     * leakage into a DIFFERENT world. This proves two things with a real, on-disk GLOBAL config
+     * file: (1) a per-world migration never writes to it at all -- {@link
+     * PerWorldLegacyMigration#writeOverrideFile} only ever targets the per-world {@code
+     * serverconfig} directory it is handed, confirmed here byte-for-byte unchanged before/after a
+     * real {@code apply()} run against this live server's own actual global config file; and (2)
+     * a genuinely distinct world with no legacy/override file of its own retains the global
+     * defaults, never a prior world's migrated value. GameTestServer itself cannot trigger a
+     * second real {@code ServerAboutToStartEvent}/config-reload cycle within one process (that
+     * reload is what a genuinely fresh world's own server start would do, confirmed live in
+     * comment 53154), so the reset back to the pre-worldA baseline below stands in for it
+     * explicitly -- {@code apply()}'s own actual guarantee under test here is narrower and fully
+     * real: given live values already at the global defaults, a legacy/override-free world's
+     * {@code apply()} call is a pure no-op that leaves them untouched.
+     */
+    @GameTest(template = "flat_platform")
+    public static void applyNeverTouchesTheGlobalConfigFileAndADistinctWorldRetainsGlobalDefaults(GameTestHelper helper) {
+        Path globalConfigFile = net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
+                .resolve(LayeredSlopesFlowingFluidsMod.MODID + "-server.toml");
+        withTempWorldServerConfigDir(worldA -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            try {
+                String globalBefore = Files.readString(globalConfigFile);
+
+                Files.writeString(worldA.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = true\nwaterSamplesPerSecond = 777\n");
+                PerWorldLegacyMigration.apply(worldA);
+                helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == 777,
+                        "sanity: worldA's migration must have actually applied before checking for leakage");
+
+                String globalAfter = Files.readString(globalConfigFile);
+                helper.assertTrue(globalBefore.equals(globalAfter),
+                        "the GLOBAL config file must never be touched by a per-world migration");
+
+                // Stands in for the config-reload boundary a genuinely distinct world's own fresh
+                // ServerAboutToStartEvent would hit -- see the method doc.
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+
+                withTempWorldServerConfigDir(worldB -> {
+                    PerWorldLegacyMigration.apply(worldB); // no legacy file for worldB: must be a pure no-op
+
+                    helper.assertTrue(FlowingFluidsConfig.EROSION_ENABLED.get() == previousEnabled,
+                            "a distinct world with no legacy/override file must retain the global defaults, not worldA's migrated value");
+                    helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == previousSamples,
+                            "a distinct world with no legacy/override file must retain the global defaults, not worldA's migrated value, got "
+                                    + FlowingFluidsConfig.SAMPLES_PER_SECOND.get());
+                    helper.assertTrue(!PerWorldLegacyMigration.alreadyConfigured(worldB),
+                            "a distinct world with nothing to migrate must never get an override file written for it");
+                });
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+            }
+        });
+        helper.succeed();
+    }
 }

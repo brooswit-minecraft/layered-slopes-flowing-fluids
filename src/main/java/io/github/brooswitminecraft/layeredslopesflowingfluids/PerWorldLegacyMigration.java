@@ -51,10 +51,14 @@ import java.nio.file.Path;
  * itself finds and loads the per-world override NATIVELY -- confirmed by its own log line,
  * {@code "Found config file override in path ./world/serverconfig/layeredslopesflowingfluids-
  * server.toml"} -- with no help from this class at all (by then {@link #alreadyConfigured} is
- * true, so {@link #apply} is a pure no-op). NeoForge also "corrects" that file on load, filling
- * in any key this class's minimal 2-key write omitted (e.g. {@code chanceScale}) with its own
- * spec default, while leaving the two keys this class DID write untouched -- confirmed by
- * inspecting the file before and after that second start.
+ * true, so {@link #apply} is a pure no-op). NeoForge also "corrects" this file's formatting on
+ * load (restoring the full commented template around the values this class wrote) without
+ * altering any of the three values themselves -- confirmed by inspecting the file before and
+ * after that second start. {@code chanceScale} is explicitly written too (coordinator review,
+ * MINECRAFT-514 comment 53155), captured as whatever is already effective at the moment of the
+ * write (not a bare pass-through default), specifically so an admin's own customized global
+ * {@code chanceScale} survives into this per-world file rather than getting silently reset to
+ * NeoForge's own spec default by that "correcting" rewrite.
  */
 final class PerWorldLegacyMigration {
     static final String LEGACY_FILE_NAME = "dynamicterrain-server.toml";
@@ -94,7 +98,15 @@ final class PerWorldLegacyMigration {
         FlowingFluidsConfig.EROSION_ENABLED.set(override.erosionEnabled());
         FlowingFluidsConfig.SAMPLES_PER_SECOND.set(override.samplesPerSecond());
         try {
-            writeOverrideFile(worldServerConfigDir, override);
+            // chanceScale is not itself part of Dynamic Terrain's legacy choice (it did not
+            // exist there) -- captured here as whatever is ALREADY effective right now (loaded
+            // moments ago from the global config, since this is this world's first start with
+            // no per-world override yet) and written explicitly, so NeoForge's own "correcting"
+            // rewrite of this minimal file on a later start fills it from THIS preserved value,
+            // not silently from its own spec default (coordinator review, MINECRAFT-514 comment
+            // 53155: an admin's customized global chanceScale must survive into a per-world
+            // override this class creates, not get silently reset to 1.0).
+            writeOverrideFile(worldServerConfigDir, override, FlowingFluidsConfig.CHANCE_SCALE.get());
         } catch (IOException e) {
             // The live .set() above already took effect for this run regardless; a write failure
             // here just risks a redundant re-attempt on the next server start (still gated by
@@ -145,17 +157,21 @@ final class PerWorldLegacyMigration {
     }
 
     /**
-     * Persists {@code override} as this world's own per-world config override file so a future
-     * restart of this exact world loads the correct values natively through NeoForge's own
-     * per-world serverconfig mechanism, independent of the global config's own default. Only ever
-     * called by {@link #apply} when {@link #alreadyConfigured} has just confirmed no such file
-     * exists yet, so this never overwrites or truncates existing content.
+     * Persists {@code override} (plus the currently-effective {@code chanceScale}, passed in by
+     * the caller rather than read here -- keeps this method free of any live {@code
+     * FlowingFluidsConfig} access, so it stays testable without the NeoForge/Minecraft classpath
+     * a plain unit test does not have) as this world's own per-world config override file, so a
+     * future restart of this exact world loads the correct values natively through NeoForge's
+     * own per-world serverconfig mechanism, independent of the global config's own default. Only
+     * ever called by {@link #apply} when {@link #alreadyConfigured} has just confirmed no such
+     * file exists yet, so this never overwrites or truncates existing content.
      */
-    static void writeOverrideFile(Path worldServerConfigDir, Override override) throws IOException {
+    static void writeOverrideFile(Path worldServerConfigDir, Override override, double chanceScale) throws IOException {
         Files.createDirectories(worldServerConfigDir);
         Files.writeString(worldServerConfigDir.resolve(OVERRIDE_FILE_NAME),
                 "erosionEnabled = " + override.erosionEnabled() + "\n"
-                        + "samplesPerSecond = " + override.samplesPerSecond() + "\n");
+                        + "samplesPerSecond = " + override.samplesPerSecond() + "\n"
+                        + "chanceScale = " + chanceScale + "\n");
     }
 
     record Override(boolean erosionEnabled, int samplesPerSecond) {}

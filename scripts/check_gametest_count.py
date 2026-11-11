@@ -46,9 +46,12 @@ class RuntimeEvidenceError(ValueError):
 # applyOnAFreshWorldWithAnExplicitOptOutSetsLiveConfigAndPersistsIt.../
 # applyNeverTouchesAnAlreadyPresentOverrideFileOrItsLiveValuesEvenWithAConflictingLegacyFile.../
 # applyIsIdempotentOnARepeatRunForTheSameWorld.../
-# twoDistinctWorldsStayIsolatedThroughApply... (MINECRAFT-514: unloaded-neighbor sampling and
-# per-world legacy migration hardening, also in FlowingFluidErosionGameTests)
-EXPECTED_REQUIRED_TEST_COUNT = 29
+# twoDistinctWorldsStayIsolatedThroughApply.../
+# applyPreservesTheCurrentlyEffectiveChanceScaleIntoTheOverrideFile.../
+# applyNeverTouchesTheGlobalConfigFileAndADistinctWorldRetainsGlobalDefaults... (MINECRAFT-514:
+# unloaded-neighbor sampling and per-world legacy migration hardening, also in
+# FlowingFluidErosionGameTests)
+EXPECTED_REQUIRED_TEST_COUNT = 31
 
 
 def verify_runtime_log(log_text):

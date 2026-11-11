@@ -98,10 +98,16 @@ class PerWorldLegacyMigrationTest {
     }
 
     @Test
-    void writeOverrideFilePersistsTheMigratedChoiceAsAPerWorldOverride(@TempDir Path worldServerConfigDir) throws IOException {
-        PerWorldLegacyMigration.writeOverrideFile(worldServerConfigDir, new PerWorldLegacyMigration.Override(true, 64));
+    void writeOverrideFilePersistsTheMigratedChoiceAndTheGivenChanceScaleAsAPerWorldOverride(@TempDir Path worldServerConfigDir) throws IOException {
+        // chanceScale is passed in explicitly, not read from any live config here (this method
+        // stays free of the NeoForge classpath this plain unit-test source set does not have --
+        // see the class doc) -- coordinator review, MINECRAFT-514 comment 53155: it must be
+        // written explicitly so a customized value survives, not merely left to NeoForge's own
+        // spec default on a later "correcting" rewrite.
+        PerWorldLegacyMigration.writeOverrideFile(worldServerConfigDir, new PerWorldLegacyMigration.Override(true, 64), 0.5);
         String written = Files.readString(worldServerConfigDir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
         assertTrue(written.contains("erosionEnabled = true"));
         assertTrue(written.contains("samplesPerSecond = 64"));
+        assertTrue(written.contains("chanceScale = 0.5"));
     }
 }
