@@ -30,14 +30,28 @@ final class LegacyConfigMigration {
         return matcher.find() ? Boolean.valueOf(matcher.group(1)) : null;
     }
 
-    /** @return Dynamic Terrain's legacy {@code waterSamplesPerSecond}, or {@code null} if the file is missing, unreadable, or doesn't set the key. */
+    /**
+     * @return Dynamic Terrain's legacy {@code waterSamplesPerSecond}, or {@code null} if the file
+     *     is missing, unreadable, doesn't set the key, or sets it to a value too large for an
+     *     {@code int} -- {@code \d+} matches digit runs of any length, and this is read from
+     *     {@link FlowingFluidsConfig}'s static initializer, so a value like
+     *     {@code 99999999999999} must fall back to {@code null} rather than throw
+     *     {@link NumberFormatException} out of class init and take the whole mod down.
+     */
     static Integer readLegacyWaterSamplesPerSecond(Path legacyConfigFile) {
         String text = readOrNull(legacyConfigFile);
         if (text == null) {
             return null;
         }
         Matcher matcher = WATER_SAMPLES_PER_SECOND.matcher(text);
-        return matcher.find() ? Integer.valueOf(matcher.group(1)) : null;
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(matcher.group(1));
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static String readOrNull(Path legacyConfigFile) {

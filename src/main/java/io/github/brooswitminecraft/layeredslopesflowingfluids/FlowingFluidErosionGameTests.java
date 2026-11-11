@@ -13,11 +13,13 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.level.storage.LevelResource;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -685,6 +687,73 @@ public final class FlowingFluidErosionGameTests {
                     "erosion must disturb grass into dirt, matching Dynamic Terrain's established semantic, got " + after.getBlock());
             helper.assertTrue(after.getValue(LayeredBlock.LAYERS) == 15, "first conversion must leave 15 layers");
         });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514: {@code LayerErosion.erode} is a public entrypoint any caller can reach
+     * directly, not only through {@link FlowingFluidErosion#sampleAround} (which already checks
+     * {@code isLoaded} before ever calling in). {@code level.getBlockState(pos)} on an unloaded
+     * position forces a synchronous chunk load/generation -- this proves the guard added to
+     * {@code erode} itself actually fires FIRST, before any block/fluid state read: a position
+     * far outside this GameTest's own loaded structure must read UNLOADED and must still read
+     * unloaded afterward, proving nothing forced it to load.
+     */
+    @GameTest(template = "flat_platform")
+    public static void erodeOnAnUnloadedPositionReportsUnloadedWithoutForcingAChunkLoad(GameTestHelper helper) {
+        withErosionEnabled(() -> {
+            BlockPos farAway = helper.absolutePos(POS).offset(10_000, 0, 10_000);
+            helper.assertTrue(!helper.getLevel().isLoaded(farAway),
+                    "this test requires a position genuinely outside this GameTest's own loaded structure");
+
+            var result = LayerErosion.erode(helper.getLevel(), farAway, GUARANTEED_AMOUNT, helper.getLevel().getRandom());
+            helper.assertTrue(result == LayerErosion.Result.UNLOADED, "expected UNLOADED, got " + result);
+
+            helper.assertTrue(!helper.getLevel().isLoaded(farAway),
+                    "erode() must never force the unloaded position it just refused to act on to load/generate");
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514: the same "no forced chunk creation" safety, but through the OTHER public
+     * entrypoint -- {@link FlowingFluidErosion#sampleAround} -- called with a center far outside
+     * this GameTest's own loaded structure. Every sampled position within {@code RADIUS}/{@code
+     * HEIGHT} of that center must be skipped via the existing {@code isLoaded} guard rather than
+     * read or force-loaded; zero erosions and the area still unloaded afterward is the proof.
+     */
+    @GameTest(template = "flat_platform")
+    public static void sampleAroundACenterFarOutsideLoadedTerrainNeverForcesAChunkLoad(GameTestHelper helper) {
+        withErosionEnabled(() -> {
+            BlockPos farCenter = helper.absolutePos(POS).offset(10_000, 0, 10_000);
+            helper.assertTrue(!helper.getLevel().isLoaded(farCenter),
+                    "this test requires a center genuinely outside this GameTest's own loaded structure");
+
+            int changed = FlowingFluidErosion.sampleAround((ServerLevel) helper.getLevel(), farCenter, 64, helper.getLevel().getRandom());
+            helper.assertTrue(changed == 0, "sampling around unloaded terrain must never report an erosion, got " + changed);
+
+            helper.assertTrue(!helper.getLevel().isLoaded(farCenter),
+                    "sampleAround must never force the unloaded area it just skipped to load/generate");
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514: proves the real wiring, not just the pure logic {@link
+     * PerWorldLegacyMigrationTest} already covers against plain temp directories --
+     * {@code ServerAboutToStartEvent} fires before any GameTest method runs (confirmed by the
+     * config-load log lines preceding "Preparing start region" in a real run), so by the time
+     * this test executes, this exact GameTestServer's own world save must already carry the
+     * marker {@link PerWorldLegacyMigration#apply} writes on every first-write-only run -- real
+     * proof the listener is actually registered and actually reaches a real {@code
+     * MinecraftServer}'s own world save path, which a Path-only unit test cannot provide.
+     */
+    @GameTest(template = "flat_platform")
+    public static void theServerAboutToStartMigrationHookActuallyRanForThisRealServer(GameTestHelper helper) {
+        var level = (ServerLevel) helper.getLevel();
+        Path worldServerConfigDir = level.getServer().getWorldPath(LevelResource.ROOT).resolve("serverconfig");
+        helper.assertTrue(PerWorldLegacyMigration.alreadyMigrated(worldServerConfigDir),
+                "PerWorldLegacyMigration.onServerAboutToStart must have already run for this real server's own world save");
         helper.succeed();
     }
 }

@@ -2,13 +2,13 @@ import unittest
 
 from check_gametest_count import RuntimeEvidenceError, verify_runtime_log
 
-BATCH_HEADER = "Running test batch 'defaultBatch:0' (22 tests)...\n"
+BATCH_HEADER = "Running test batch 'defaultBatch:0' (25 tests)...\n"
 
 
 class CheckGameTestCountTest(unittest.TestCase):
     def test_exact_expected_count_passes(self):
-        log = BATCH_HEADER + "=== 22 GAME TESTS COMPLETE IN 1.5s ===\nAll 22 required tests passed :)"
-        self.assertEqual(verify_runtime_log(log), 22)
+        log = BATCH_HEADER + "=== 25 GAME TESTS COMPLETE IN 1.5s ===\nAll 25 required tests passed :)"
+        self.assertEqual(verify_runtime_log(log), 25)
 
     def test_zero_tests_fails_closed(self):
         with self.assertRaises(RuntimeEvidenceError):
