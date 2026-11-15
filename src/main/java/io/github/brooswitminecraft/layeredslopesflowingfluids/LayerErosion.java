@@ -34,11 +34,23 @@ import net.minecraft.world.level.block.state.BlockState;
 public final class LayerErosion {
     private LayerErosion() {}
 
-    public enum Result { DISABLED, SKIPPED, RESISTED, PROTECTED, ERODED }
+    public enum Result { DISABLED, UNLOADED, SKIPPED, RESISTED, PROTECTED, ERODED }
 
+    /**
+     * {@code pos}'s own caller (currently {@link FlowingFluidErosion#sampleAround}) already
+     * checks {@code level.isLoaded(pos)} before ever reaching here, but this is a public
+     * entrypoint any other caller can reach directly -- {@code level.getBlockState(pos)} on an
+     * unloaded position forces a synchronous chunk load/generation (confirmed via
+     * {@code ServerLevel#getChunk}'s default {@code requireChunk=true}), so this guard must be
+     * the FIRST thing checked here, before any block/fluid state read, not merely relied upon at
+     * the existing caller.
+     */
     public static Result erode(Level level, BlockPos pos, double amount, RandomSource random) {
         if (level.isClientSide() || !FlowingFluidsConfig.EROSION_ENABLED.get()) {
             return Result.DISABLED;
+        }
+        if (!level.isLoaded(pos)) {
+            return Result.UNLOADED;
         }
         BlockState state = level.getBlockState(pos);
         if (!takesPart(state)) {

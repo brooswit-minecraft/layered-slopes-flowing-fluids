@@ -31,6 +31,7 @@ public class LayeredSlopesFlowingFluidsMod {
     public LayeredSlopesFlowingFluidsMod(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(ModConfig.Type.SERVER, FlowingFluidsConfig.SPEC);
         registerMaterials();
+        NeoForge.EVENT_BUS.addListener(PerWorldLegacyMigration::onServerAboutToStart);
         NeoForge.EVENT_BUS.addListener(FlowingFluidErosion::onServerTick);
         NeoForge.EVENT_BUS.addListener(RecentFlowActivity::onNeighborNotify);
         NeoForge.EVENT_BUS.addListener(RecentFlowActivity::onServerStarting);

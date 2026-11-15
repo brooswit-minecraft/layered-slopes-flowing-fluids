@@ -43,4 +43,36 @@ class MigrationPolicyTest {
     void samplesPerSecondFallsBackToTheOrdinaryDefaultWhenNeverSet() {
         assertEquals(128, MigrationPolicy.defaultSamplesPerSecond(null));
     }
+
+    @Test
+    void samplesPerSecondAtTheUpperBoundIsHonoredExactly() {
+        // 4096 is FlowingFluidsConfig.SAMPLES_PER_SECOND's own defineInRange upper bound --
+        // in-spec, must be honored exactly, not normalized away.
+        assertEquals(4096, MigrationPolicy.defaultSamplesPerSecond(4096));
+    }
+
+    @Test
+    void samplesPerSecondOneOverTheUpperBoundFallsBackToTheOrdinaryDefault() {
+        // MINECRAFT-514 coordinator review (comment 53153): 4097 fits in an int (so
+        // LegacyConfigMigration's own overflow guard never sees it) but is still out of
+        // FlowingFluidsConfig's own 0..4096 spec -- passing it straight through to defineInRange's
+        // default, or into a per-world .set()/persisted file, would be a real bug, not cosmetic.
+        assertEquals(128, MigrationPolicy.defaultSamplesPerSecond(4097));
+        assertEquals(128, MigrationPolicy.defaultSamplesPerSecond(5000));
+        assertEquals(128, MigrationPolicy.defaultSamplesPerSecond(Integer.MAX_VALUE));
+    }
+
+    @Test
+    void outOfSpecSamplesPerSecondDoesNotAffectTheErosionOptInPolicy() {
+        // An out-of-spec sample count is normalized exactly like "never set" for BOTH policy
+        // functions: with the master switch on, "never set" already carries forward as enabled
+        // (legacyErosionEnabled true, legacyWaterSamplesPerSecond null -- see
+        // legacyErosionGenuinelyRunningCarriesForwardAsEnabled), so an out-of-spec value must
+        // produce that exact same opt-in outcome, explicitly, not by accident.
+        assertTrue(MigrationPolicy.defaultErosionEnabled(true, 4097));
+        assertTrue(MigrationPolicy.defaultErosionEnabled(true, Integer.MAX_VALUE));
+        // The master switch still governs regardless of the (now-normalized) sample count.
+        assertFalse(MigrationPolicy.defaultErosionEnabled(false, 4097));
+        assertFalse(MigrationPolicy.defaultErosionEnabled(null, Integer.MAX_VALUE));
+    }
 }

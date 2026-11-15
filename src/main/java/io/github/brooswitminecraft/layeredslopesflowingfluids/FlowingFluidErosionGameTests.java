@@ -13,11 +13,14 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.level.storage.LevelResource;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -684,6 +687,398 @@ public final class FlowingFluidErosionGameTests {
             helper.assertTrue(after.getBlock() == LayeredSlopesMod.LAYERED_DIRT.get(),
                     "erosion must disturb grass into dirt, matching Dynamic Terrain's established semantic, got " + after.getBlock());
             helper.assertTrue(after.getValue(LayeredBlock.LAYERS) == 15, "first conversion must leave 15 layers");
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514: {@code LayerErosion.erode} is a public entrypoint any caller can reach
+     * directly, not only through {@link FlowingFluidErosion#sampleAround} (which already checks
+     * {@code isLoaded} before ever calling in). {@code level.getBlockState(pos)} on an unloaded
+     * position forces a synchronous chunk load/generation -- this proves the guard added to
+     * {@code erode} itself actually fires FIRST, before any block/fluid state read: a position
+     * far outside this GameTest's own loaded structure must read UNLOADED and must still read
+     * unloaded afterward, proving nothing forced it to load.
+     */
+    @GameTest(template = "flat_platform")
+    public static void erodeOnAnUnloadedPositionReportsUnloadedWithoutForcingAChunkLoad(GameTestHelper helper) {
+        withErosionEnabled(() -> {
+            BlockPos farAway = helper.absolutePos(POS).offset(10_000, 0, 10_000);
+            helper.assertTrue(!helper.getLevel().isLoaded(farAway),
+                    "this test requires a position genuinely outside this GameTest's own loaded structure");
+
+            var result = LayerErosion.erode(helper.getLevel(), farAway, GUARANTEED_AMOUNT, helper.getLevel().getRandom());
+            helper.assertTrue(result == LayerErosion.Result.UNLOADED, "expected UNLOADED, got " + result);
+
+            helper.assertTrue(!helper.getLevel().isLoaded(farAway),
+                    "erode() must never force the unloaded position it just refused to act on to load/generate");
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514: the same "no forced chunk creation" safety, but through the OTHER public
+     * entrypoint -- {@link FlowingFluidErosion#sampleAround} -- called with a center far outside
+     * this GameTest's own loaded structure. Every sampled position within {@code RADIUS}/{@code
+     * HEIGHT} of that center must be skipped via the existing {@code isLoaded} guard rather than
+     * read or force-loaded; zero erosions and the area still unloaded afterward is the proof.
+     */
+    @GameTest(template = "flat_platform")
+    public static void sampleAroundACenterFarOutsideLoadedTerrainNeverForcesAChunkLoad(GameTestHelper helper) {
+        withErosionEnabled(() -> {
+            BlockPos farCenter = helper.absolutePos(POS).offset(10_000, 0, 10_000);
+            helper.assertTrue(!helper.getLevel().isLoaded(farCenter),
+                    "this test requires a center genuinely outside this GameTest's own loaded structure");
+
+            int changed = FlowingFluidErosion.sampleAround((ServerLevel) helper.getLevel(), farCenter, 64, helper.getLevel().getRandom());
+            helper.assertTrue(changed == 0, "sampling around unloaded terrain must never report an erosion, got " + changed);
+
+            helper.assertTrue(!helper.getLevel().isLoaded(farCenter),
+                    "sampleAround must never force the unloaded area it just skipped to load/generate");
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514 self-review (comment 53158): an earlier version of this test relied on a
+     * diagnostic file {@code apply} wrote on every call, including this exact no-legacy/no-override
+     * branch -- itself a real production side effect on the one path required to leave a fresh
+     * world's own config completely untouched, now removed entirely. This GameTest fixture's own
+     * world genuinely has no per-world {@code dynamicterrain-server.toml} (confirmed: only {@code
+     * readme.txt} exists under {@code run/world/serverconfig} before any server start), and
+     * {@code ServerAboutToStartEvent} fires before any GameTest method runs (confirmed by the
+     * config-load log lines preceding "Preparing start region" in a real run) -- so by the time
+     * this test executes, the real listener has already examined this exact world via a real
+     * {@code MinecraftServer}, which a Path-only unit test cannot exercise. What remains provable
+     * without any artifact of its own: this world's {@code serverconfig} directory holds nothing
+     * beyond NeoForge's own stock {@code readme.txt} -- no override, and nothing else -- proving
+     * the real hook made zero filesystem writes for this legacy-free world. A legacy-file-present
+     * path (the actually interesting "did it apply the right values" case, and the
+     * already-configured "must remain untouched" case) is exercised directly below by {@link
+     * #applyOnAFreshWorldWithAnExplicitOptOutSetsLiveConfigAndPersistsIt} and its siblings -- same
+     * production {@code apply} method, same {@code FlowingFluidsConfig} fields, just a
+     * hand-created temp directory rather than this test's own real world save (so each variant
+     * can set up its own fixture independently without racing the real, already-fired hook).
+     */
+    @GameTest(template = "flat_platform")
+    public static void theServerAboutToStartMigrationHookMakesNoFilesystemWriteForThisRealLegacyFreeWorld(GameTestHelper helper) {
+        var level = (ServerLevel) helper.getLevel();
+        Path worldServerConfigDir = level.getServer().getWorldPath(LevelResource.ROOT).resolve("serverconfig");
+        java.util.List<String> entries;
+        try (var stream = Files.list(worldServerConfigDir)) {
+            entries = stream.map(p -> p.getFileName().toString()).sorted().collect(java.util.stream.Collectors.toList());
+        } catch (java.io.IOException e) {
+            helper.fail("could not list this real server's own world serverconfig directory: " + e);
+            return;
+        }
+        helper.assertTrue(entries.equals(java.util.List.of("readme.txt")),
+                "the real hook must make zero filesystem writes for a world with no per-world legacy file -- "
+                        + "expected only NeoForge's own readme.txt, got: " + entries);
+        helper.succeed();
+    }
+
+    /**
+     * Runs {@code body} against a freshly created, empty temp directory standing in for one
+     * world's {@code serverconfig} directory, deleting it afterward regardless of outcome --
+     * {@link PerWorldLegacyMigration#apply} needs a real {@code Path} to read/write, and a GameTest
+     * has no {@code @TempDir} support of its own.
+     */
+    private static void withTempWorldServerConfigDir(java.util.function.Consumer<Path> body) {
+        Path dir;
+        try {
+            dir = Files.createTempDirectory("mc514-serverconfig-");
+        } catch (java.io.IOException e) {
+            throw new RuntimeException(e);
+        }
+        try {
+            body.accept(dir);
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
+
+    private static void deleteRecursively(Path dir) {
+        try (var stream = Files.walk(dir)) {
+            stream.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (java.io.IOException ignored) {
+                    // Best-effort cleanup of a throwaway temp directory.
+                }
+            });
+        } catch (java.io.IOException ignored) {
+            // Best-effort cleanup of a throwaway temp directory.
+        }
+    }
+
+    /**
+     * MINECRAFT-514 coordinator review (comment 53149): the actually interesting "did it apply
+     * the right values" case, exercised through the real production {@code apply} method against
+     * the real, live {@link FlowingFluidsConfig} fields -- not just {@code decide}'s pure return
+     * value.
+     */
+    @GameTest(template = "flat_platform")
+    public static void applyOnAFreshWorldWithAnExplicitOptOutSetsLiveConfigAndPersistsIt(GameTestHelper helper) {
+        withTempWorldServerConfigDir(dir -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            try {
+                FlowingFluidsConfig.EROSION_ENABLED.set(true); // the opposite of what migration should produce
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(999);
+                Files.writeString(dir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = false\nwaterSamplesPerSecond = 0\n");
+
+                PerWorldLegacyMigration.apply(dir);
+
+                helper.assertTrue(!FlowingFluidsConfig.EROSION_ENABLED.get(), "apply() must set the live value from this world's own legacy file");
+                helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == 0,
+                        "expected samplesPerSecond=0, got " + FlowingFluidsConfig.SAMPLES_PER_SECOND.get());
+                helper.assertTrue(PerWorldLegacyMigration.alreadyConfigured(dir), "apply() must persist a per-world override file");
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+            }
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514 coordinator review (comment 53149): the exact regression for the clobbering
+     * bug the earlier marker-file design had -- an override file already exists (explicit admin
+     * content, including a key this migration doesn't even know about) AND a conflicting legacy
+     * file is present. {@code apply()} must leave the file byte-for-byte untouched and never call
+     * {@code .set()} at all.
+     */
+    @GameTest(template = "flat_platform")
+    public static void applyNeverTouchesAnAlreadyPresentOverrideFileOrItsLiveValuesEvenWithAConflictingLegacyFile(GameTestHelper helper) {
+        withTempWorldServerConfigDir(dir -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            String existingOverride = "erosionEnabled = true\nsamplesPerSecond = 300\nchanceScale = 0.5\n";
+            try {
+                Files.writeString(dir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME), existingOverride);
+                Files.writeString(dir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = false\nwaterSamplesPerSecond = 0\n");
+                FlowingFluidsConfig.EROSION_ENABLED.set(true);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(300);
+
+                PerWorldLegacyMigration.apply(dir);
+
+                helper.assertTrue(FlowingFluidsConfig.EROSION_ENABLED.get(), "apply() must never overwrite live values once an override file already exists");
+                helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == 300,
+                        "expected samplesPerSecond=300, got " + FlowingFluidsConfig.SAMPLES_PER_SECOND.get());
+                String afterApply = Files.readString(dir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
+                helper.assertTrue(existingOverride.equals(afterApply),
+                        "an existing override file must be preserved byte-for-byte, including unrelated keys, got: " + afterApply);
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+            }
+        });
+        helper.succeed();
+    }
+
+    /** MINECRAFT-514: a repeat server start for the same world must never re-decide or re-write once configured. */
+    @GameTest(template = "flat_platform")
+    public static void applyIsIdempotentOnARepeatRunForTheSameWorld(GameTestHelper helper) {
+        withTempWorldServerConfigDir(dir -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            try {
+                Files.writeString(dir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = false\nwaterSamplesPerSecond = 0\n");
+
+                PerWorldLegacyMigration.apply(dir);
+                String afterFirstRun = Files.readString(dir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
+
+                // A later server start could now find an admin-edited override; apply() must
+                // never run its decision again, regardless -- this is the repeat-run guarantee.
+                FlowingFluidsConfig.EROSION_ENABLED.set(true);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(777);
+                PerWorldLegacyMigration.apply(dir);
+
+                helper.assertTrue(FlowingFluidsConfig.EROSION_ENABLED.get(), "a repeat run must not re-decide or touch live values a second time");
+                helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == 777,
+                        "expected samplesPerSecond=777 (untouched by the repeat run), got " + FlowingFluidsConfig.SAMPLES_PER_SECOND.get());
+                helper.assertTrue(afterFirstRun.equals(Files.readString(dir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME))),
+                        "a repeat run must not rewrite the override file");
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+            }
+        });
+        helper.succeed();
+    }
+
+    /** MINECRAFT-514: two distinct worlds' own override files must reflect only their own per-world legacy choice. */
+    @GameTest(template = "flat_platform")
+    public static void twoDistinctWorldsStayIsolatedThroughApply(GameTestHelper helper) {
+        withTempWorldServerConfigDir(worldA -> withTempWorldServerConfigDir(worldB -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            try {
+                Files.writeString(worldA.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = true\nwaterSamplesPerSecond = 128\n");
+                Files.writeString(worldB.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = false\nwaterSamplesPerSecond = 0\n");
+
+                PerWorldLegacyMigration.apply(worldA);
+                PerWorldLegacyMigration.apply(worldB);
+
+                String worldAOverride = Files.readString(worldA.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
+                String worldBOverride = Files.readString(worldB.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
+                helper.assertTrue(worldAOverride.contains("erosionEnabled = true"), worldAOverride);
+                helper.assertTrue(worldBOverride.contains("erosionEnabled = false"), worldBOverride);
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+            }
+        }));
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514 coordinator review (comment 53155): the currently-effective {@code
+     * chanceScale} must be captured and written explicitly into a per-world override, not left
+     * to NeoForge's own "correcting" rewrite to fill from its spec default -- that would silently
+     * reset an admin's own customized global value for this world specifically.
+     */
+    @GameTest(template = "flat_platform")
+    public static void applyPreservesTheCurrentlyEffectiveChanceScaleIntoTheOverrideFile(GameTestHelper helper) {
+        withTempWorldServerConfigDir(dir -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            double previousChanceScale = FlowingFluidsConfig.CHANCE_SCALE.get();
+            try {
+                FlowingFluidsConfig.CHANCE_SCALE.set(0.42); // a customized, non-default value
+                Files.writeString(dir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = true\nwaterSamplesPerSecond = 50\n");
+
+                PerWorldLegacyMigration.apply(dir);
+
+                String written = Files.readString(dir.resolve(PerWorldLegacyMigration.OVERRIDE_FILE_NAME));
+                helper.assertTrue(written.contains("chanceScale = 0.42"),
+                        "the currently-effective chanceScale must be preserved into the per-world override, got: " + written);
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+                FlowingFluidsConfig.CHANCE_SCALE.set(previousChanceScale);
+            }
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514 coordinator review (comment 53155): the two-start experiment behind comment
+     * 53154 proved reload across two starts of the SAME world, but cannot by itself rule out
+     * leakage into a DIFFERENT world. This proves two things with a real, on-disk GLOBAL config
+     * file: (1) a per-world migration never writes to it at all -- {@link
+     * PerWorldLegacyMigration#writeOverrideFileAtomically} only ever targets the per-world {@code
+     * serverconfig} directory it is handed, confirmed here byte-for-byte unchanged before/after a
+     * real {@code apply()} run against this live server's own actual global config file; and (2)
+     * a genuinely distinct world with no legacy/override file of its own retains the global
+     * defaults, never a prior world's migrated value. GameTestServer itself cannot trigger a
+     * second real {@code ServerAboutToStartEvent}/config-reload cycle within one process (that
+     * reload is what a genuinely fresh world's own server start would do, confirmed live in
+     * comment 53154), so the reset back to the pre-worldA baseline below stands in for it
+     * explicitly -- {@code apply()}'s own actual guarantee under test here is narrower and fully
+     * real: given live values already at the global defaults, a legacy/override-free world's
+     * {@code apply()} call is a pure no-op that leaves them untouched.
+     */
+    @GameTest(template = "flat_platform")
+    public static void applyNeverTouchesTheGlobalConfigFileAndADistinctWorldRetainsGlobalDefaults(GameTestHelper helper) {
+        Path globalConfigFile = net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
+                .resolve(LayeredSlopesFlowingFluidsMod.MODID + "-server.toml");
+        withTempWorldServerConfigDir(worldA -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            try {
+                String globalBefore = Files.readString(globalConfigFile);
+
+                Files.writeString(worldA.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = true\nwaterSamplesPerSecond = 777\n");
+                PerWorldLegacyMigration.apply(worldA);
+                helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == 777,
+                        "sanity: worldA's migration must have actually applied before checking for leakage");
+
+                String globalAfter = Files.readString(globalConfigFile);
+                helper.assertTrue(globalBefore.equals(globalAfter),
+                        "the GLOBAL config file must never be touched by a per-world migration");
+
+                // Stands in for the config-reload boundary a genuinely distinct world's own fresh
+                // ServerAboutToStartEvent would hit -- see the method doc.
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+
+                withTempWorldServerConfigDir(worldB -> {
+                    PerWorldLegacyMigration.apply(worldB); // no legacy file for worldB: must be a pure no-op
+
+                    helper.assertTrue(FlowingFluidsConfig.EROSION_ENABLED.get() == previousEnabled,
+                            "a distinct world with no legacy/override file must retain the global defaults, not worldA's migrated value");
+                    helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == previousSamples,
+                            "a distinct world with no legacy/override file must retain the global defaults, not worldA's migrated value, got "
+                                    + FlowingFluidsConfig.SAMPLES_PER_SECOND.get());
+                    helper.assertTrue(!PerWorldLegacyMigration.alreadyConfigured(worldB),
+                            "a distinct world with nothing to migrate must never get an override file written for it");
+                });
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+            }
+        });
+        helper.succeed();
+    }
+
+    /**
+     * MINECRAFT-514 self-review (comment 53160): persistence now happens strictly before any
+     * live {@code .set()} call -- a failed write must leave live config exactly as it already
+     * was, with no trusted override left behind for a later start to (wrongly) trust. Forces a
+     * real write failure by making the per-world {@code serverconfig} directory itself
+     * unwritable, so {@code Files.createTempFile} inside it genuinely fails, through the same
+     * production {@code apply()} method and live {@code FlowingFluidsConfig} fields the other
+     * {@code apply()}-exercising GameTests use.
+     */
+    @GameTest(template = "flat_platform")
+    public static void applyNeverMutatesLiveValuesWhenPersistenceFails(GameTestHelper helper) {
+        withTempWorldServerConfigDir(dir -> {
+            boolean previousEnabled = FlowingFluidsConfig.EROSION_ENABLED.get();
+            int previousSamples = FlowingFluidsConfig.SAMPLES_PER_SECOND.get();
+            try {
+                Files.writeString(dir.resolve(PerWorldLegacyMigration.LEGACY_FILE_NAME),
+                        "erosionEnabled = true\nwaterSamplesPerSecond = 555\n");
+
+                boolean madeUnwritable = dir.toFile().setWritable(false);
+                helper.assertTrue(madeUnwritable, "fixture setup failed: could not make the directory unwritable");
+                try {
+                    PerWorldLegacyMigration.apply(dir);
+                } finally {
+                    dir.toFile().setWritable(true); // restore so cleanup can remove the directory afterward
+                }
+
+                helper.assertTrue(FlowingFluidsConfig.EROSION_ENABLED.get() == previousEnabled,
+                        "a persistence failure must never mutate live erosionEnabled, got " + FlowingFluidsConfig.EROSION_ENABLED.get());
+                helper.assertTrue(FlowingFluidsConfig.SAMPLES_PER_SECOND.get() == previousSamples,
+                        "a persistence failure must never mutate live samplesPerSecond, got " + FlowingFluidsConfig.SAMPLES_PER_SECOND.get());
+                helper.assertTrue(!PerWorldLegacyMigration.alreadyConfigured(dir),
+                        "a failed persistence attempt must never leave a trusted override file behind");
+            } catch (java.io.IOException e) {
+                helper.fail("fixture setup failed: " + e);
+            } finally {
+                FlowingFluidsConfig.EROSION_ENABLED.set(previousEnabled);
+                FlowingFluidsConfig.SAMPLES_PER_SECOND.set(previousSamples);
+            }
         });
         helper.succeed();
     }

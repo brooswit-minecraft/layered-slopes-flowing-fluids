@@ -39,8 +39,19 @@ class RuntimeEvidenceError(ValueError):
 # aVanillaFactoryConstructedPartialStateIsFlowingAndErodes... (same count expected whether or
 # not -PcoinstallFlowingFluids=true additionally loads the real Flowing Fluids mod: these tests
 # erode via whichever real engine's own physics is actually active, never by assuming which one;
-# see FlowingFluidErosionGameTests)
-EXPECTED_REQUIRED_TEST_COUNT = 22
+# see FlowingFluidErosionGameTests)/
+# erodeOnAnUnloadedPositionReportsUnloadedWithoutForcingAChunkLoad.../
+# sampleAroundACenterFarOutsideLoadedTerrainNeverForcesAChunkLoad.../
+# theServerAboutToStartMigrationHookMakesNoFilesystemWriteForThisRealLegacyFreeWorld.../
+# applyOnAFreshWorldWithAnExplicitOptOutSetsLiveConfigAndPersistsIt.../
+# applyNeverTouchesAnAlreadyPresentOverrideFileOrItsLiveValuesEvenWithAConflictingLegacyFile.../
+# applyIsIdempotentOnARepeatRunForTheSameWorld.../
+# twoDistinctWorldsStayIsolatedThroughApply.../
+# applyPreservesTheCurrentlyEffectiveChanceScaleIntoTheOverrideFile.../
+# applyNeverTouchesTheGlobalConfigFileAndADistinctWorldRetainsGlobalDefaults.../
+# applyNeverMutatesLiveValuesWhenPersistenceFails... (MINECRAFT-514: unloaded-neighbor sampling
+# and per-world legacy migration hardening, also in FlowingFluidErosionGameTests)
+EXPECTED_REQUIRED_TEST_COUNT = 32
 
 
 def verify_runtime_log(log_text):
